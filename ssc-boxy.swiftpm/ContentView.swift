@@ -13,22 +13,6 @@ public enum RadioFilter: String, CaseIterable {
     case amRadio = "AM Radio"
     case fmVintage = "FM Vintage"
     case hamRadio = "Ham Radio"
-    
-    public var frequency: String {
-        switch self {
-        case .amRadio: return "540 AM"
-        case .fmVintage: return "101.5 FM"
-        case .hamRadio: return "14.250 MHz"
-        }
-    }
-    
-    public var description: String {
-        switch self {
-        case .amRadio: return "1930s Narrowband"
-        case .fmVintage: return "70s Warm Broadcast"
-        case .hamRadio: return "Global Shortwave"
-        }
-    }
 }
 
 @MainActor
@@ -52,11 +36,14 @@ public class RadioAudioManager: NSObject, ObservableObject {
     private let heterodynePlayerNode = AVAudioPlayerNode()
     private var heterodyneBuffer: AVAudioPCMBuffer?
     
+    private var uiSoundPlayer: AVAudioPlayer?
+    private var activeTickPlayers: [AVAudioPlayer] = []
+    
     @Published var isPlaying = false
     @Published var isPaused = false
     @Published var isMonitoring = false
     @Published var isAutoEchoEnabled = false
-    @Published var currentFilter: RadioFilter = .amRadio
+    @Published var currentFilter: RadioFilter = .hamRadio
     @Published var volume: Double = 0.5 {
         didSet {
             mixerNode.outputVolume = Float(volume)
@@ -83,6 +70,7 @@ public class RadioAudioManager: NSObject, ObservableObject {
         loadNoiseBuffer()
         loadBeepBuffer()
         loadHeterodyneBuffer()
+        debugListBundleResources()
     }
     
     private func setupEngine() {
@@ -111,7 +99,7 @@ public class RadioAudioManager: NSObject, ObservableObject {
         // Connect mixer to output
         engine.connect(mixerNode, to: engine.mainMixerNode, format: format)
         
-        prepareFilter(.amRadio)
+        prepareFilter(currentFilter)
     }
 
     func toggleMonitoring() {
@@ -365,28 +353,63 @@ public class RadioAudioManager: NSObject, ObservableObject {
     }
     
     private func getTestAudioURL() -> URL? {
+        let bundle: Bundle = {
+            #if SWIFT_PACKAGE
+            return Bundle.module
+            #else
+            return Bundle.main
+            #endif
+        }()
+        
         let filename = selectedTrack.filename
-        return Bundle.main.url(forResource: filename, withExtension: "mp3") ?? 
-               Bundle.main.url(forResource: filename, withExtension: "mp3", subdirectory: "Sounds")
+        return bundle.url(forResource: filename, withExtension: "mp3") ?? 
+               bundle.url(forResource: filename, withExtension: "mp3", subdirectory: "Resources") ??
+               bundle.url(forResource: filename, withExtension: "mp3", subdirectory: "Sounds")
     }
-    
+
+    private func debugListBundleResources() {
+        let bundle: Bundle = {
+            #if SWIFT_PACKAGE
+            return Bundle.module
+            #else
+            return Bundle.main
+            #endif
+        }()
+
+        print("📦 Bundle URL:", bundle.bundleURL)
+
+        if let resourcesURL = bundle.resourceURL,
+           let files = try? FileManager.default.contentsOfDirectory(
+                at: resourcesURL,
+                includingPropertiesForKeys: nil
+           ) {
+            print("📂 Resources folder contents:")
+            for url in files {
+                print(" -", url.lastPathComponent)
+            }
+        } else {
+            print("⚠️ Could not list bundle resources")
+        }
+    }
+
+
     private func playAudio(at url: URL, isLocal: Bool) {
         do {
             let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.playback, mode: .default, options: .defaultToSpeaker)
+            try session.setCategory(.playback, mode: .default, options: [])   // ← no .defaultToSpeaker
             try session.setActive(true)
-            
+
             if isMonitoring { stopMonitoring() }
-            
+
             let file = try AVAudioFile(forReading: url)
             if !engine.isRunning { try engine.start() }
-            
+
             playerNode.stop()
-            playerNode.scheduleFile(file, at: nil, completionHandler: { [weak self] in
+            playerNode.scheduleFile(file, at: nil) { [weak self] in
                 Task { @MainActor in
                     self?.isPlaying = false
                 }
-            })
+            }
             playerNode.play()
             isPlaying = true
             isPaused = false
@@ -420,11 +443,64 @@ public class RadioAudioManager: NSObject, ObservableObject {
         isPlaying = false
         isPaused = false
     }
-}
 
+        public func playSound(_ name: String, rate: Float? = nil) {
+            let bundle: Bundle = {
+                #if SWIFT_PACKAGE
+                return Bundle.module
+                #else
+                return Bundle.main
+                #endif
+            }()
+            
+            guard let url = bundle.url(forResource: name, withExtension: "mp3") ??
+                             bundle.url(forResource: name, withExtension: "mp3", subdirectory: "Resources") else {
+                print("❌ Sound file not found: \(name)")
+                return
+            }
+            
+            do {
+                let player = try AVAudioPlayer(contentsOf: url)
+                player.prepareToPlay()
+                
+                // Clean up old finished players
+                activeTickPlayers.removeAll { !$0.isPlaying }
+                
+                // If it's a tick, add to pool; otherwise replace main UI player
+                if name.contains("tick") {
+                    player.volume = 0.3
+                    player.enableRate = true
+                    
+                    if let rate = rate {
+                        player.rate = rate
+                    } else {
+                        // Default behavior for other ticks if rate not provided
+                        player.rate = 1.0
+                    }
+                    
+                    activeTickPlayers.append(player)
+                    player.play()
+                } else {
+                    uiSoundPlayer = player
+                    uiSoundPlayer?.play()
+                }
+            } catch {
+                print("❌ Error playing UI sound: \(error)")
+            }
+        }        
+            public func triggerHaptic(_ style: UIImpactFeedbackGenerator.FeedbackStyle = .light) {
+                let generator = UIImpactFeedbackGenerator(style: style)
+                generator.prepare()
+                generator.impactOccurred()
+            }
+        }
 public struct ContentView: View {
     @StateObject private var audioManager = RadioAudioManager.shared
     @State private var isPlayToggled = false
+    @State private var startVolume: Double = 0
+     
+    
+    let volumeSteps = 32
     
     public init() {}
 
@@ -438,9 +514,9 @@ public struct ContentView: View {
                 Image("speaker")
                     .resizable()
                     .scaledToFit()
-                    .frame(height: 400) // Increased from 140
-                    .padding(.top, 20)
-                
+                    .frame(height: 320)
+                    .padding(.top, 25)
+
                 // Display with Song List
                 ZStack {
                     Image("display_on")
@@ -464,8 +540,12 @@ public struct ContentView: View {
                         VStack(alignment: .leading, spacing: 4) {
                             ForEach(visibleTracks) { track in
                                 Button(action: {
-                                    if let idx = audioManager.availableTracks.firstIndex(of: track) {
-                                        audioManager.playTrack(at: idx)
+                                    var transaction = Transaction()
+                                    transaction.disablesAnimations = true
+                                    withTransaction(transaction) {
+                                        if let idx = audioManager.availableTracks.firstIndex(of: track) {
+                                            audioManager.playTrack(at: idx)
+                                        }
                                     }
                                 }) {
                                     HStack(alignment: .top, spacing: 5) {
@@ -480,11 +560,17 @@ public struct ContentView: View {
                                             .lineLimit(1)
                                     }
                                 }
+                                .buttonStyle(PlainNoAnimationButtonStyle())
                             }
+                        }
+                        .animation(nil, value: audioManager.selectedTrackIndex)
+                        .transaction { transaction in
+                            transaction.disablesAnimations = true
                         }
                         .padding(.horizontal, 40)
                         .frame(width: 300, alignment: .leading)
                     }
+                    .animation(nil, value: audioManager.selectedTrackIndex)
                     // Position to match screen in the PNG
                     .frame(width: 260, height: 140) // screen size
                    // move into screen area
@@ -501,10 +587,10 @@ public struct ContentView: View {
                             Image("volume_indicator_line")
                                 .resizable()
                                 .scaledToFit()
-                                .frame(width: 139.76) // Set precisely to 139.76
-                                .padding(.bottom, 40)
-                                .offset(x: -1)
-                            
+                                .aspectRatio(contentMode: .fit)
+                                .frame(width: 142, height: 120)
+                                .offset(x: -1, y: -18)
+
                             ZStack {
                                 // Shadow (static, bottom layer)
                                 Circle()
@@ -522,17 +608,58 @@ public struct ContentView: View {
                                     .shadow(color: .black.opacity(0.2), radius: 2.4, x: 5, y: 7)
                                     .shadow(color: .black.opacity(0.76), radius: 2.45, x: 1, y: 2)
                                 
+                                Image("knob_black_ring")
+                                    .resizable()
+                                    .scaledToFit()
+                                    .frame(width: 116)
+                                
                                 // Control knob (rotates)
                                 Image("knob_control")
                                     .resizable()
                                     .scaledToFit()
                                     .frame(width: 116)
                                     .rotationEffect(.degrees(audioManager.volume * 240 - 120))
+                                    .animation(nil, value: audioManager.volume)
                                     .gesture(
                                         DragGesture()
                                             .onChanged { value in
-                                                let delta = -Double(value.translation.height) / 200.0
-                                                audioManager.volume = max(0, min(1, audioManager.volume + delta))
+                                                // Center of the knob in local coordinates (roughly 116/2)
+                                                let center = CGPoint(x: 58, y: 58)
+                                                
+                                                // Calculate angles
+                                                let startVector = CGVector(dx: value.startLocation.x - center.x, dy: value.startLocation.y - center.y)
+                                                let currentVector = CGVector(dx: value.location.x - center.x, dy: value.location.y - center.y)
+                                                
+                                                let startAngle = atan2(startVector.dy, startVector.dx)
+                                                let currentAngle = atan2(currentVector.dy, currentVector.dx)
+                                                
+                                                var angleDiff = currentAngle - startAngle
+                                                
+                                                // Normalize angle difference to avoid jumps
+                                                if angleDiff > .pi { angleDiff -= 2 * .pi }
+                                                if angleDiff < -.pi { angleDiff += 2 * .pi }
+                                                
+                                                if value.startLocation == value.location {
+                                                    startVolume = audioManager.volume
+                                                }
+                                                
+                                                // Map rotation angle (-PI to PI) to volume change
+                                                // 240 degrees (roughly 4.2 radians) = full volume range
+                                                let rotationSensitivity: Double = 4.2
+                                                let drag = Double(angleDiff) / rotationSensitivity
+
+                                                let raw = startVolume + drag
+                                                let newVolume = quantize(max(0, min(1, raw)))
+                                                
+                                                if newVolume != audioManager.volume {
+                                                    audioManager.triggerHaptic(.light)
+                                                    
+                                                    // Map 0.0...1.0 to 0.7...1.7 rate for clear pitch ascending/descending
+                                                    let calculatedRate = Float(0.7 + (newVolume * 1.0))
+                                                    audioManager.playSound("volume-tick-1", rate: calculatedRate)
+                                                    
+                                                    audioManager.volume = newVolume
+                                                }
                                             }
                                     )
                             }
@@ -549,33 +676,53 @@ public struct ContentView: View {
                 // Playback Controls (Bottom Row)
                 HStack(spacing: 5) {
                     controlButton(icon: "ic_replay") {
+                        audioManager.triggerHaptic(.medium)
+                        audioManager.playSound("button-click")
                         audioManager.stopPlayback()
                         audioManager.playTestAudio()
                     }
                     
                     controlButton(icon: "ic_previous") {
-                        let prevIndex = (audioManager.selectedTrackIndex - 1 + audioManager.availableTracks.count) % audioManager.availableTracks.count
-                        audioManager.playTrack(at: prevIndex)                        }
+                        audioManager.triggerHaptic(.medium)
+                        audioManager.playSound("button-click")
+                        var transaction = Transaction()
+                        transaction.disablesAnimations = true
+                        withTransaction(transaction) {
+                            let prevIndex = (audioManager.selectedTrackIndex - 1 + audioManager.availableTracks.count) % audioManager.availableTracks.count
+                            audioManager.playTrack(at: prevIndex)
+                        }
+                    }
                     
                     controlButton(
                         icon: isPlayToggled ? "ic_pause" : "ic_play",
                         background: isPlayToggled ? "button_disable" : "button_enable"
                     ) {
+                        audioManager.triggerHaptic(.medium)
                         if isPlayToggled {
+                            audioManager.playSound("button-click")
                             audioManager.stopPlayback()
                             isPlayToggled = false
                         } else {
+                            audioManager.playSound("button-release")
                             audioManager.playTestAudio()
                             isPlayToggled = true
                         }
                     }
                     
                     controlButton(icon: "ic_next") {
-                        let nextIndex = (audioManager.selectedTrackIndex + 1) % audioManager.availableTracks.count
-                        audioManager.playTrack(at: nextIndex)
+                        audioManager.triggerHaptic(.medium)
+                        audioManager.playSound("button-click")
+                        var transaction = Transaction()
+                        transaction.disablesAnimations = true
+                        withTransaction(transaction) {
+                            let nextIndex = (audioManager.selectedTrackIndex + 1) % audioManager.availableTracks.count
+                            audioManager.playTrack(at: nextIndex)
+                        }
                     }
                     
                     controlButton(icon: "ic_stop") {
+                        audioManager.triggerHaptic(.medium)
+                        audioManager.playSound("button-click")
                         audioManager.stopPlayback()
                         isPlayToggled = false
                     }
@@ -601,17 +748,16 @@ public struct ContentView: View {
         
         Button(action: action) {
             ZStack {
-                Image(background)
-                    .resizable()
-                    .frame(width: size, height: size * 0.6)
-                
+                // The background is now managed by the ButtonStyle configuration
                 Image(icon)
                     .resizable()
                     .scaledToFit()
                     .frame(width: size * 0.35, height: size * 0.35)
+                    .animation(nil, value: icon)
             }
+            .frame(width: size, height: size * 0.6)
         }
-        .buttonStyle(.plain) 
+        .buttonStyle(NoAnimationButtonStyle(baseBackground: background, size: size)) 
     }
     
     // Logic to show only 3 tracks around the selected one
@@ -630,6 +776,35 @@ public struct ContentView: View {
             audioManager.availableTracks[current],
             audioManager.availableTracks[next]
         ]
+    }
+    
+    func quantize(_ value: Double) -> Double {
+        let step = 1.0 / Double(volumeSteps - 1)
+        return (value / step).rounded() * step
+    }
+}
+
+struct NoAnimationButtonStyle: ButtonStyle {
+    let baseBackground: String
+    let size: CGFloat
+
+    func makeBody(configuration: Configuration) -> some View {
+        ZStack {
+            Image(configuration.isPressed ? "button_disable" : baseBackground)
+                .resizable()
+                .frame(width: size, height: size * 0.6)
+                .animation(nil, value: configuration.isPressed)
+            
+            configuration.label
+        }
+    }
+}
+
+struct PlainNoAnimationButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .opacity(configuration.isPressed ? 0.7 : 1.0)
+            .animation(nil, value: configuration.isPressed)
     }
 }
 

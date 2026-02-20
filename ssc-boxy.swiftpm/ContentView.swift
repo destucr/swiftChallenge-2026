@@ -817,65 +817,75 @@ public struct ContentView: View {
                     Spacer()
                 }
 
-                                                                // Playback Controls (Bottom Row)
-                                                                HStack(spacing: 5) {
-                                                                    controlButton(icon: "ic_replay", isActive: false, altIcon: nil) {
-                                                                        audioManager.triggerHaptic(.light)
-                                                                        audioManager.playSound("button-click")
-                                                                        audioManager.stopPlayback()
-                                                                        audioManager.playTestAudio()
-                                                                    }
-                                                                    
-                                                                    controlButton(icon: "ic_previous", isActive: false, altIcon: nil) {
-                                                                        audioManager.triggerHaptic(.light)
-                                                                        audioManager.playSound("button-click")
-                                                                        var transaction = Transaction()
-                                                                        transaction.disablesAnimations = true
-                                                                        withTransaction(transaction) {
-                                                                            let prevIndex = (audioManager.selectedTrackIndex - 1 + audioManager.availableTracks.count) % audioManager.availableTracks.count
-                                                                            audioManager.playTrack(at: prevIndex, autoPlay: audioManager.isPlaying)
-                                                                        }
-                                                                    }
-                                                                    
-                                                                                        controlButton(
-                                                                                            icon: isPlayToggled ? "ic_pause" : "ic_play",
-                                                                                            background: "button_enable",
-                                                                                            isActive: isPlayToggled,
-                                                                                            altIcon: isPlayToggled ? "ic_play" : "ic_pause"
-                                                                                        ) {
-                                                                                            var transaction = Transaction()
-                                                                                            transaction.disablesAnimations = true
-                                                                                            withTransaction(transaction) {
-                                                                                                audioManager.triggerHaptic(.light)
-                                                                                                if isPlayToggled {
-                                                                                                    audioManager.playSound("button-click")
-                                                                                                    audioManager.stopPlayback()
-                                                                                                    isPlayToggled = false
-                                                                                                } else {
-                                                                                                    audioManager.playSound("button-release")
-                                                                                                    audioManager.playTestAudio()
-                                                                                                    isPlayToggled = true
-                                                                                                }
-                                                                                            }
-                                                                                        }                                                                    
-                                                                    controlButton(icon: "ic_next", isActive: false, altIcon: nil) {
-                                                                        audioManager.triggerHaptic(.light)
-                                                                        audioManager.playSound("button-click")
-                                                                        var transaction = Transaction()
-                                                                        transaction.disablesAnimations = true
-                                                                        withTransaction(transaction) {
-                                                                            let nextIndex = (audioManager.selectedTrackIndex + 1) % audioManager.availableTracks.count
-                                                                            audioManager.playTrack(at: nextIndex, autoPlay: audioManager.isPlaying)
-                                                                        }
-                                                                    }
-                                                                    
-                                                                    controlButton(icon: "ic_stop", isActive: false, altIcon: nil) {
-                                                                        audioManager.triggerHaptic(.light)
-                                                                        audioManager.playSound("button-click")
-                                                                        audioManager.stopPlayback()
-                                                                        isPlayToggled = false
-                                                                    }
-                                                                }                .padding(.vertical, 3)
+                // Playback Controls (Bottom Row)
+                HStack(spacing: 5) {
+                    controlButton(icon: "ic_replay", isActive: false, altIcon: nil) {
+                        audioManager.triggerHaptic(.light)
+                        audioManager.playSound("button-click")
+                        audioManager.stopPlayback()
+                        audioManager.playTestAudio()
+                    }
+                    .drawingGroup()
+                    
+                    controlButton(icon: "ic_previous", isActive: false, altIcon: nil) {
+                        audioManager.triggerHaptic(.light)
+                        audioManager.playSound("button-click")
+                        var transaction = Transaction()
+                        transaction.disablesAnimations = true
+                        withTransaction(transaction) {
+                            let prevIndex = (audioManager.selectedTrackIndex - 1 + audioManager.availableTracks.count) % audioManager.availableTracks.count
+                            audioManager.playTrack(at: prevIndex, autoPlay: audioManager.isPlaying)
+                        }
+                    }
+                    .drawingGroup()
+                    
+                    controlButton(
+                        icon: isPlayToggled ? "ic_pause" : "ic_play",
+                        background: "button_enable",
+                        isActive: isPlayToggled,
+                        altIcon: isPlayToggled ? "ic_play" : "ic_pause"
+                    ) {
+                        var transaction = Transaction()
+                        transaction.disablesAnimations = true
+                        withTransaction(transaction) {
+                            audioManager.triggerHaptic(.light)
+                            if isPlayToggled {
+                                audioManager.playSound("button-click")
+                                audioManager.stopPlayback()
+                                isPlayToggled = false
+                            } else {
+                                audioManager.playSound("button-release")
+                                audioManager.playTestAudio()
+                                isPlayToggled = true
+                            }
+                        }
+                    }
+                    .drawingGroup()
+                    
+                    controlButton(icon: "ic_next", isActive: false, altIcon: nil) {
+                        audioManager.triggerHaptic(.light)
+                        audioManager.playSound("button-click")
+                        var transaction = Transaction()
+                        transaction.disablesAnimations = true
+                        withTransaction(transaction) {
+                            let nextIndex = (audioManager.selectedTrackIndex + 1) % audioManager.availableTracks.count
+                            audioManager.playTrack(at: nextIndex, autoPlay: audioManager.isPlaying)
+                        }
+                    }
+                    .drawingGroup()
+                    
+                    controlButton(icon: "ic_stop", isActive: false, altIcon: nil) {
+                        audioManager.triggerHaptic(.light)
+                        audioManager.playSound("button-click")
+                        audioManager.stopPlayback()
+                        isPlayToggled = false
+                    }
+                    .drawingGroup()
+                }
+                .transaction { transaction in
+                    transaction.disablesAnimations = true
+                }
+                .padding(.vertical, 3)
                 .padding(.horizontal, 2)
                 .background(
                     RoundedRectangle(cornerRadius: 5)
@@ -887,29 +897,28 @@ public struct ContentView: View {
     }
 
     // Helper for styled control buttons (uniform size)
-            private func controlButton(
-                icon: String,
-                background: String = "button_enable",
-                isActive: Bool = false,
-                altIcon: String? = nil,
-                size: CGFloat = 65,
-                action: @escaping () -> Void
-            ) -> some View {
-                
-                Button(action: action) {
-                    ZStack {
-                        // The background is now managed by the ButtonStyle configuration
-
-                        Image(icon)
-                            .resizable()
-                            .scaledToFit()
-                            .frame(width: size * 0.35, height: size * 0.35)
-                            .animation(nil, value: icon)
-                    }
-                    .frame(width: size, height: size * 0.6)
-                }
-                .buttonStyle(NoAnimationButtonStyle(baseBackground: background, isActive: isActive, altIcon: altIcon, size: size)) 
-            }    // Logic to show only 3 tracks around the selected one
+    private func controlButton(
+        icon: String,
+        background: String = "button_enable",
+        isActive: Bool = false,
+        altIcon: String? = nil,
+        size: CGFloat = 65,
+        action: @escaping () -> Void
+    ) -> some View {
+        
+        Button(action: action) {
+            // Label is empty because ButtonStyle handles everything now
+            Color.clear.frame(width: size, height: size * 0.6)
+        }
+        .buttonStyle(NoAnimationButtonStyle(
+            baseBackground: background,
+            baseIcon: icon,
+            altIcon: altIcon,
+            isActive: isActive,
+            size: size
+        ))
+    }
+    // Logic to show only 3 tracks around the selected one
     private var visibleTracks: [AudioTrack] {
         let count = audioManager.availableTracks.count
         if count == 0 { return [] }
@@ -935,26 +944,26 @@ public struct ContentView: View {
 
 struct NoAnimationButtonStyle: ButtonStyle {
     let baseBackground: String
-    let isActive: Bool
+    let baseIcon: String
     let altIcon: String?
+    let isActive: Bool
     let size: CGFloat
 
     func makeBody(configuration: Configuration) -> some View {
-        ZStack {
-            // Show disable if pressed OR if it's the active toggled state
-            Image((configuration.isPressed || isActive) ? "button_disable" : baseBackground)
+        let isPressedOrActive = configuration.isPressed || isActive
+        let currentIcon = (configuration.isPressed && altIcon != nil) ? altIcon! : baseIcon
+        
+        return ZStack {
+            // Background
+            Image(isPressedOrActive ? "button_disable" : baseBackground)
                 .resizable()
                 .frame(width: size, height: size * 0.6)
-                .animation(nil, value: configuration.isPressed || isActive)
             
-            if configuration.isPressed, let alt = altIcon {
-                Image(alt)
-                    .resizable()
-                    .scaledToFit()
-                    .frame(width: size * 0.35, height: size * 0.35)
-            } else {
-                configuration.label
-            }
+            // Icon
+            Image(currentIcon)
+                .resizable()
+                .scaledToFit()
+                .frame(width: size * 0.35, height: size * 0.35)
         }
     }
 }

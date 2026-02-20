@@ -57,7 +57,7 @@ public class RadioAudioManager: NSObject, ObservableObject {
     @Published var isPaused = false
     @Published var isMonitoring = false
     @Published var isAutoEchoEnabled = false
-    @Published var currentFilter: RadioFilter = .hamRadio
+    @Published var currentFilter: RadioFilter = .amRadio
     @Published var volume: Double = 0.5 {
         didSet {
             mixerNode.outputVolume = Float(volume)
@@ -84,27 +84,27 @@ public class RadioAudioManager: NSObject, ObservableObject {
         loadBeepBuffer()
         loadHeterodyneBuffer()
         preloadUISounds()
-        
+
         // Prepare haptics
         lightHaptic.prepare()
         mediumHaptic.prepare()
-        
+
         debugListBundleResources()
     }
-    
+
     private func preloadUISounds() {
         let sounds = ["button-click", "button-release", "volume-tick-1"]
         let bundle: Bundle = {
-            #if SWIFT_PACKAGE
+#if SWIFT_PACKAGE
             return Bundle.module
-            #else
+#else
             return Bundle.main
-            #endif
+#endif
         }()
-        
+
         for name in sounds {
             if let url = bundle.url(forResource: name, withExtension: "mp3") ??
-                         bundle.url(forResource: name, withExtension: "mp3", subdirectory: "Resources"),
+                bundle.url(forResource: name, withExtension: "mp3", subdirectory: "Resources"),
                let data = try? Data(contentsOf: url) {
                 cachedSoundData[name] = data
             }
@@ -608,15 +608,15 @@ public class RadioAudioManager: NSObject, ObservableObject {
         Task { @MainActor in
             self.tickLock.lock()
             defer { self.tickLock.unlock() }
-            
+
             // Clean up old finished players
             self.activeTickPlayers.removeAll { !$0.isPlaying }
 
             if name.contains("tick") {
                 // Throttle tick sounds if too many are playing
                 guard self.activeTickPlayers.count < self.maxTickPlayers else { return }
-                
-                player.volume = 0.3
+
+                player.volume = 0.1
                 player.enableRate = true
                 player.rate = rate ?? 1.0
                 self.activeTickPlayers.append(player)
@@ -648,6 +648,9 @@ public struct ContentView: View {
     @State private var lastAngle: Double = 0
     @State private var angleOffset: Double = 0
 
+    @State private var showVolumeDisplay = false
+    @State private var volumeTimer: Timer?
+
 
     let volumeSteps = 32
 
@@ -664,9 +667,9 @@ public struct ContentView: View {
                     .resizable()
                     .scaledToFit()
                     .frame(height: 320)
-                    .padding(.top, 25)
+                    .padding(.top, 20)
 
-                // Display with Song List
+                // Display with Song List & Volume Indicator
                 ZStack {
                     Image("display_on")
                         .resizable()
@@ -675,58 +678,72 @@ public struct ContentView: View {
 
                     VStack {
                         HStack {
-                            Text("Music")
+                            Text(showVolumeDisplay ? "VOLUME" : "MUSIC")
                                 .font(.custom("LED Dot-Matrix", size: 14))
 
                             Spacer()
 
-                            Text("FM")
-                                .font(.custom("LED Dot-Matrix", size: 14))
+                            if showVolumeDisplay {
+                                Text("\(Int(audioManager.volume * 100))%")
+                                    .font(.custom("LED Dot-Matrix", size: 14))
+                            } else {
+                                Text("FM")
+                                    .font(.custom("LED Dot-Matrix", size: 14))
+                            }
                         }
                         .padding(.bottom, 5)
 
-                        // Track List Overlay
-                        VStack(alignment: .leading, spacing: 4) {
-                            ForEach(visibleTracks) { track in
-                                Button(action: {
-                                    var transaction = Transaction()
-                                    transaction.disablesAnimations = true
-                                    withTransaction(transaction) {
-                                        if let idx = audioManager.availableTracks.firstIndex(of: track) {
-                                            audioManager.playTrack(at: idx)
+                        // Content Area
+                        if showVolumeDisplay {
+                            VolumeIndicatorView(volume: audioManager.volume)
+                        } else {                                                // Track List Overlay
+                            VStack(alignment: .leading, spacing: 4) {
+                                ForEach(visibleTracks) { track in
+                                    Button(action: {
+                                        var transaction = Transaction()
+                                        transaction.disablesAnimations = true
+                                        withTransaction(transaction) {
+                                            if let idx = audioManager.availableTracks.firstIndex(of: track) {
+                                                audioManager.playTrack(at: idx)
+                                            }
+                                        }
+                                    }) {
+                                        HStack(alignment: .top, spacing: 5) {
+                                            Text(audioManager.selectedTrack == track ? ">" : "-")
+                                                .font(.custom("LED Dot-Matrix", size: 14))
+                                                .foregroundColor(audioManager.selectedTrack == track ? .black : .black.opacity(0.2))
+                                                .padding(.leading, audioManager.selectedTrack == track ? 5 : 0)
+
+                                            Text(track.title.uppercased())
+                                                .font(.custom("LED Dot-Matrix", size: 14))
+                                                .foregroundColor(audioManager.selectedTrack == track ? .black : .black.opacity(0.2))
+                                                .lineLimit(1)
                                         }
                                     }
-                                }) {
-                                    HStack(alignment: .top, spacing: 5) {
-                                        Text(audioManager.selectedTrack == track ? ">" : "-")
-                                            .font(.custom("LED Dot-Matrix", size: 14))
-                                            .foregroundColor(audioManager.selectedTrack == track ? .black : .black.opacity(0.2))
-                                            .padding(.leading, audioManager.selectedTrack == track ? 5 : 0)
-
-                                        Text(track.title.uppercased())
-                                            .font(.custom("LED Dot-Matrix", size: 14))
-                                            .foregroundColor(audioManager.selectedTrack == track ? .black : .black.opacity(0.2))
-                                            .lineLimit(1)
-                                    }
+                                    .buttonStyle(PlainNoAnimationButtonStyle())
                                 }
-                                .buttonStyle(PlainNoAnimationButtonStyle())
                             }
+                            .animation(nil, value: audioManager.selectedTrackIndex)
+                            .transaction { transaction in
+                                transaction.disablesAnimations = true
+                            }
+                            .padding(.horizontal, 40)
+                            .frame(width: 300, alignment: .leading)
                         }
-                        .animation(nil, value: audioManager.selectedTrackIndex)
-                        .transaction { transaction in
-                            transaction.disablesAnimations = true
-                        }
-                        .padding(.horizontal, 40)
-                        .frame(width: 300, alignment: .leading)
                     }
+                    .animation(nil, value: showVolumeDisplay)
                     .animation(nil, value: audioManager.selectedTrackIndex)
                     // Position to match screen in the PNG
                     .frame(width: 260, height: 140) // screen size
+
                     // move into screen area
 
                     // Prevent UI from leaking outside screen
                     .clipped()
                 }
+
+                Spacer ()
+
 
 
                 // Volume Control (Left Aligned above buttons)
@@ -797,6 +814,7 @@ public struct ContentView: View {
                                                 let newVolume = quantize(max(0, min(1, (targetDeg + 120.0) / 240.0)))
 
                                                 if newVolume != audioManager.volume {
+                                                    showVolume()
                                                     audioManager.triggerHaptic(.light)
 
                                                     let calculatedRate = Float(0.7 + (newVolume * 1.0))
@@ -805,8 +823,7 @@ public struct ContentView: View {
                                                     audioManager.volume = newVolume
                                                 }
                                             }
-                                    )
-                            }
+                                    )                            }
                         }
 
                         Text("VOLUME")
@@ -826,7 +843,7 @@ public struct ContentView: View {
                         audioManager.playTestAudio()
                     }
                     .drawingGroup()
-                    
+
                     controlButton(icon: "ic_previous", isActive: false, altIcon: nil) {
                         audioManager.triggerHaptic(.light)
                         audioManager.playSound("button-click")
@@ -838,7 +855,7 @@ public struct ContentView: View {
                         }
                     }
                     .drawingGroup()
-                    
+
                     controlButton(
                         icon: isPlayToggled ? "ic_pause" : "ic_play",
                         background: "button_enable",
@@ -861,7 +878,7 @@ public struct ContentView: View {
                         }
                     }
                     .drawingGroup()
-                    
+
                     controlButton(icon: "ic_next", isActive: false, altIcon: nil) {
                         audioManager.triggerHaptic(.light)
                         audioManager.playSound("button-click")
@@ -873,7 +890,7 @@ public struct ContentView: View {
                         }
                     }
                     .drawingGroup()
-                    
+
                     controlButton(icon: "ic_stop", isActive: false, altIcon: nil) {
                         audioManager.triggerHaptic(.light)
                         audioManager.playSound("button-click")
@@ -905,7 +922,7 @@ public struct ContentView: View {
         size: CGFloat = 65,
         action: @escaping () -> Void
     ) -> some View {
-        
+
         Button(action: action) {
             // Label is empty because ButtonStyle handles everything now
             Color.clear.frame(width: size, height: size * 0.6)
@@ -940,6 +957,45 @@ public struct ContentView: View {
         let step = 1.0 / Double(volumeSteps - 1)
         return (value / step).rounded() * step
     }
+
+    private func showVolume() {
+        showVolumeDisplay = true
+        volumeTimer?.invalidate()
+        volumeTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: false) { _ in
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                showVolumeDisplay = false
+            }
+        }
+    }
+}
+
+struct VolumeIndicatorView: View {
+    let volume: Double
+
+    var body: some View {
+        HStack(alignment: .bottom, spacing: 10) {
+            ForEach(0..<6) { index in
+                // index 0 is left, index 5 is right
+                // Heights: 4, 7, 10, 13, 16, 19 segments
+                let segmentCount = 2 + (index * 3)
+
+                // Threshold: Left bar (index 0) lights up first, Right bar (index 5) last
+                let threshold = Double(index) / 6.0
+
+                VStack(spacing: -13) {
+                    ForEach(0..<segmentCount, id: \.self) { _ in
+                        Text("-")
+                            .font(.custom("LED Dot-Matrix", size: 18))
+                    }
+                }
+                .foregroundColor(volume > threshold ? .black : .black.opacity(0.2))
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: 30, alignment: .center)
+        .padding(.bottom, 5)
+    }
 }
 
 struct NoAnimationButtonStyle: ButtonStyle {
@@ -952,13 +1008,13 @@ struct NoAnimationButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         let isPressedOrActive = configuration.isPressed || isActive
         let currentIcon = (configuration.isPressed && altIcon != nil) ? altIcon! : baseIcon
-        
+
         return ZStack {
             // Background
             Image(isPressedOrActive ? "button_disable" : baseBackground)
                 .resizable()
                 .frame(width: size, height: size * 0.6)
-            
+
             // Icon
             Image(currentIcon)
                 .resizable()

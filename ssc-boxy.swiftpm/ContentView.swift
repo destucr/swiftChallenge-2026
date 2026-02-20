@@ -18,16 +18,19 @@ public enum RadioFilter: String, CaseIterable {
 @MainActor
 public class RadioAudioManager: NSObject, ObservableObject {
     public static let shared = RadioAudioManager()
-    
+
+    // Serial queue to ensure audio operations never overlap
+    private let audioQueue = DispatchQueue(label: "com.destucr.boxy.audio")
+
     private let engine = AVAudioEngine()
     private let playerNode = AVAudioPlayerNode()
     private let mixerNode = AVAudioMixerNode()
-    
+
     // Effects
     private let eqNode = AVAudioUnitEQ(numberOfBands: 3)
     private let distortionNode = AVAudioUnitDistortion()
     private let delayNode = AVAudioUnitDelay()
-    
+
     // Noise and Beeps
     private let noisePlayerNode = AVAudioPlayerNode()
     private var noiseBuffer: AVAudioPCMBuffer?
@@ -35,10 +38,21 @@ public class RadioAudioManager: NSObject, ObservableObject {
     private var beepBuffer: AVAudioPCMBuffer?
     private let heterodynePlayerNode = AVAudioPlayerNode()
     private var heterodyneBuffer: AVAudioPCMBuffer?
-    
+
     private var uiSoundPlayer: AVAudioPlayer?
     private var activeTickPlayers: [AVAudioPlayer] = []
-    
+    private let maxTickPlayers = 8 // Limit concurrent tick sounds
+    private let tickLock = NSLock()
+
+    // Cached resources
+    private var cachedSoundData: [String: Data] = [:]
+    private let lightHaptic = UIImpactFeedbackGenerator(style: .light)
+    private let mediumHaptic = UIImpactFeedbackGenerator(style: .medium)
+
+    // Simple debounce for track changes
+    private var lastTrackChangeTime = Date.distantPast
+    private let minTrackChangeInterval: TimeInterval = 0.15
+
     @Published var isPlaying = false
     @Published var isPaused = false
     @Published var isMonitoring = false
@@ -49,31 +63,64 @@ public class RadioAudioManager: NSObject, ObservableObject {
             mixerNode.outputVolume = Float(volume)
         }
     }
-    
+
     @Published var availableTracks: [AudioTrack] = [
         AudioTrack(title: "Beethoven - Coriolan Overture", filename: "Classicals.de - Beethoven - Coriolan Overture - Op.62", artist: "Beethoven"),
         AudioTrack(title: "Brahms - Fantasia, Op. 116 No. 2", filename: "Classicals.de - Brahms - Fantasia, Opus 116 - No. 2 - Arranged for Strings", artist: "Brahms"),
         AudioTrack(title: "Mozart - Symphony in F major", filename: "Classicals.de - Mozart - Symphony in F major, K.Anh.223:19a - III", artist: "Mozart"),
         AudioTrack(title: "Vivaldi - Oboe Concerto", filename: "Classicals.de - Vivaldi - Oboe Concerto in C major - 2. Larghetto - RV 447", artist: "Vivaldi"),
         AudioTrack(title: "Vivaldi - Spring", filename: "Vivaldi - Spring", artist: "Vivaldi"),
-
     ]
     @Published var selectedTrackIndex: Int = 0
-    
+
     public var selectedTrack: AudioTrack {
         availableTracks[selectedTrackIndex]
     }
-    
+
     override init() {
         super.init()
         setupEngine()
         loadNoiseBuffer()
         loadBeepBuffer()
         loadHeterodyneBuffer()
+        preloadUISounds()
+        
+        // Prepare haptics
+        lightHaptic.prepare()
+        mediumHaptic.prepare()
+        
         debugListBundleResources()
     }
     
+    private func preloadUISounds() {
+        let sounds = ["button-click", "button-release", "volume-tick-1"]
+        let bundle: Bundle = {
+            #if SWIFT_PACKAGE
+            return Bundle.module
+            #else
+            return Bundle.main
+            #endif
+        }()
+        
+        for name in sounds {
+            if let url = bundle.url(forResource: name, withExtension: "mp3") ??
+                         bundle.url(forResource: name, withExtension: "mp3", subdirectory: "Resources"),
+               let data = try? Data(contentsOf: url) {
+                cachedSoundData[name] = data
+            }
+        }
+    }
+
     private func setupEngine() {
+        // Configure audio session once for playback
+        do {
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(.playback, mode: .default, options: [])
+            try session.setActive(true)
+        } catch {
+            print("❌ Failed to setup audio session: \(error)")
+        }
+
         engine.attach(playerNode)
         engine.attach(eqNode)
         engine.attach(distortionNode)
@@ -82,23 +129,20 @@ public class RadioAudioManager: NSObject, ObservableObject {
         engine.attach(beepPlayerNode)
         engine.attach(heterodynePlayerNode)
         engine.attach(mixerNode)
-        
+
         let format = engine.mainMixerNode.outputFormat(forBus: 0)
-        
-        // Connect player -> EQ -> Distortion -> Delay -> Mixer
+
         engine.connect(playerNode, to: eqNode, format: format)
         engine.connect(eqNode, to: distortionNode, format: format)
         engine.connect(distortionNode, to: delayNode, format: format)
         engine.connect(delayNode, to: mixerNode, format: format)
-        
-        // Connect noise, beep and heterodyne to mixer
+
         engine.connect(noisePlayerNode, to: mixerNode, format: format)
         engine.connect(beepPlayerNode, to: mixerNode, format: format)
         engine.connect(heterodynePlayerNode, to: mixerNode, format: format)
-        
-        // Connect mixer to output
+
         engine.connect(mixerNode, to: engine.mainMixerNode, format: format)
-        
+
         prepareFilter(currentFilter)
     }
 
@@ -111,42 +155,41 @@ public class RadioAudioManager: NSObject, ObservableObject {
     }
 
     func startMonitoring() {
+        // Keep monitoring path as-is but stop via queue
         stopPlayback()
-        
+
         do {
             let session = AVAudioSession.sharedInstance()
             try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth])
             try session.setActive(true, options: .notifyOthersOnDeactivation)
-            
+
             if engine.isRunning {
                 engine.stop()
             }
-            
+
             let inputNode = engine.inputNode
             let inputFormat = inputNode.inputFormat(forBus: 0)
-            
+
             engine.disconnectNodeInput(eqNode)
             engine.disconnectNodeInput(distortionNode)
             engine.disconnectNodeInput(delayNode)
             engine.disconnectNodeInput(mixerNode)
-            
-            // Rebuild chain: Input -> EQ -> Distortion -> Delay -> Mixer
+
             engine.connect(inputNode, to: eqNode, format: inputFormat)
             engine.connect(eqNode, to: distortionNode, format: inputFormat)
             engine.connect(distortionNode, to: delayNode, format: inputFormat)
             engine.connect(delayNode, to: mixerNode, format: inputFormat)
-            
             engine.connect(mixerNode, to: engine.mainMixerNode, format: nil)
-            
+
             engine.prepare()
             try engine.start()
             isMonitoring = true
-            
+
             if let buffer = noiseBuffer {
                 noisePlayerNode.volume = (currentFilter == .hamRadio) ? 0.08 : 0.03
                 noisePlayerNode.scheduleBuffer(buffer, at: nil, options: .loops, completionHandler: nil)
                 noisePlayerNode.play()
-                
+
                 if currentFilter == .hamRadio {
                     startHeterodyne()
                 }
@@ -157,36 +200,43 @@ public class RadioAudioManager: NSObject, ObservableObject {
     }
 
     func stopMonitoring() {
-        engine.stop()
-        
-        // Reset the chain back to the playerNode
-        engine.disconnectNodeInput(eqNode)
-        engine.disconnectNodeInput(distortionNode)
-        engine.disconnectNodeInput(delayNode)
-        engine.disconnectNodeInput(mixerNode)
-        
-        let outputFormat = engine.mainMixerNode.outputFormat(forBus: 0)
-        
-        // Rebuild chain for playback: Player -> EQ -> Distortion -> Delay -> Mixer
-        engine.connect(playerNode, to: eqNode, format: outputFormat)
-        engine.connect(eqNode, to: distortionNode, format: outputFormat)
-        engine.connect(distortionNode, to: delayNode, format: outputFormat)
-        engine.connect(delayNode, to: mixerNode, format: outputFormat)
-        engine.connect(mixerNode, to: engine.mainMixerNode, format: outputFormat)
-        
-        isMonitoring = false
-        noisePlayerNode.stop()
-        stopHeterodyne()
+        // ensure no race with playback
+        audioQueue.async { [weak self] in
+            guard let self else { return }
+            self.engine.stop()
+
+            self.engine.disconnectNodeInput(self.eqNode)
+            self.engine.disconnectNodeInput(self.distortionNode)
+            self.engine.disconnectNodeInput(self.delayNode)
+            self.engine.disconnectNodeInput(self.mixerNode)
+
+            let outputFormat = self.engine.mainMixerNode.outputFormat(forBus: 0)
+
+            self.engine.connect(self.playerNode, to: self.eqNode, format: outputFormat)
+            self.engine.connect(self.eqNode, to: self.distortionNode, format: outputFormat)
+            self.engine.connect(self.distortionNode, to: self.delayNode, format: outputFormat)
+            self.engine.connect(self.delayNode, to: self.mixerNode, format: outputFormat)
+            self.engine.connect(self.mixerNode, to: self.engine.mainMixerNode, format: outputFormat)
+
+            self.noisePlayerNode.stop()
+            self.stopHeterodyne()
+
+            Task { @MainActor in
+                self.isMonitoring = false
+            }
+        }
     }
+
+
 
     private func loadNoiseBuffer() {
         let format = engine.mainMixerNode.outputFormat(forBus: 0)
         let frameCount = AVAudioFrameCount(format.sampleRate * 5.0)
         guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else { return }
-        
+
         buffer.frameLength = frameCount
         let channelCount = Int(buffer.format.channelCount)
-        
+
         for channel in 0..<channelCount {
             if let data = buffer.floatChannelData?[channel] {
                 for i in 0..<Int(frameCount) {
@@ -204,12 +254,12 @@ public class RadioAudioManager: NSObject, ObservableObject {
         let duration: Double = 0.2
         let frameCount = AVAudioFrameCount(format.sampleRate * duration)
         guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else { return }
-        
+
         buffer.frameLength = frameCount
         let channelCount = Int(buffer.format.channelCount)
         let frequency: Float = 1200.0
         let k: Float = 10.0 // Decay constant
-        
+
         for channel in 0..<channelCount {
             if let data = buffer.floatChannelData?[channel] {
                 for i in 0..<Int(frameCount) {
@@ -227,10 +277,10 @@ public class RadioAudioManager: NSObject, ObservableObject {
         let duration: Double = 5.0
         let frameCount = AVAudioFrameCount(format.sampleRate * duration)
         guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else { return }
-        
+
         buffer.frameLength = frameCount
         let channelCount = Int(buffer.format.channelCount)
-        
+
         for channel in 0..<channelCount {
             if let data = buffer.floatChannelData?[channel] {
                 var phase: Float = 0
@@ -269,7 +319,7 @@ public class RadioAudioManager: NSObject, ObservableObject {
             self.noisePlayerNode.stop()
         }
     }
-    
+
     public func setFilter(_ filter: RadioFilter) {
         currentFilter = filter
         prepareFilter(filter)
@@ -292,12 +342,12 @@ public class RadioAudioManager: NSObject, ObservableObject {
     private func stopHeterodyne() {
         heterodynePlayerNode.stop()
     }
-    
+
     private func prepareFilter(_ filter: RadioFilter) {
         distortionNode.bypass = true
         delayNode.bypass = true
         for i in 0..<3 { eqNode.bands[i].bypass = true }
-        
+
         switch filter {
         case .amRadio:
             eqNode.bands[0].filterType = .highPass
@@ -331,57 +381,143 @@ public class RadioAudioManager: NSObject, ObservableObject {
             delayNode.bypass = false
         }
     }
-    
-    public func playTrack(at index: Int) {
-        selectedTrackIndex = index
-        stopPlayback()
-        playTestAudio()
+
+    // MARK: - Public playback API (debounced & queued)
+
+    public func playTrack(at index: Int, autoPlay: Bool = true) {
+        let now = Date()
+        guard now.timeIntervalSince(lastTrackChangeTime) >= minTrackChangeInterval else {
+            return
+        }
+        lastTrackChangeTime = now
+
+        audioQueue.async { [weak self] in
+            guard let self else { return }
+            let safeIndex = max(0, min(self.availableTracks.count - 1, index))
+
+            Task { @MainActor in
+                self.selectedTrackIndex = safeIndex
+            }
+
+            if autoPlay {
+                self.stopPlaybackInternal()
+                self.playTestAudioInternal()
+            }
+        }
     }
 
     public func playTestAudio() {
+        audioQueue.async { [weak self] in
+            self?.playTestAudioInternal()
+        }
+    }
+
+    // MARK: - Internal playback helpers (called only on audioQueue)
+
+    private func playTestAudioInternal() {
         if isPaused {
-            resumePlayback()
+            resumePlaybackInternal()
             return
         }
-        
+
         guard let url = getTestAudioURL() else {
             print("❌ Test audio file not found")
             return
         }
-        
-        playAudio(at: url, isLocal: false)
+
+        playAudioInternal(at: url)
     }
-    
+
+    private func playAudioInternal(at url: URL) {
+        do {
+            let session = AVAudioSession.sharedInstance()
+            // Category is already set in setupEngine; ensure active
+            if session.category != .playback {
+                try session.setCategory(.playback, mode: .default, options: [])
+            }
+            try session.setActive(true)
+
+            if isMonitoring {
+                stopMonitoringInternal()
+            }
+
+            let file = try AVAudioFile(forReading: url)
+            if !engine.isRunning {
+                try engine.start()
+            }
+
+            playerNode.stop()
+            playerNode.reset()
+            playerNode.scheduleFile(file, at: nil) { [weak self] in
+                Task { @MainActor in
+                    self?.isPlaying = false
+                }
+            }
+            playerNode.play()
+
+            Task { @MainActor in
+                self.isPlaying = true
+                self.isPaused = false
+            }
+
+            print("▶️ Playing: \(url.lastPathComponent)")
+        } catch {
+            print("Error playing audio: \(error)")
+        }
+    }
+
+    private func stopMonitoringInternal() {
+        engine.stop()
+        engine.disconnectNodeInput(eqNode)
+        engine.disconnectNodeInput(distortionNode)
+        engine.disconnectNodeInput(delayNode)
+        engine.disconnectNodeInput(mixerNode)
+
+        let outputFormat = engine.mainMixerNode.outputFormat(forBus: 0)
+        engine.connect(playerNode, to: eqNode, format: outputFormat)
+        engine.connect(eqNode, to: distortionNode, format: outputFormat)
+        engine.connect(distortionNode, to: delayNode, format: outputFormat)
+        engine.connect(delayNode, to: mixerNode, format: outputFormat)
+        engine.connect(mixerNode, to: engine.mainMixerNode, format: outputFormat)
+
+        noisePlayerNode.stop()
+        stopHeterodyne()
+
+        Task { @MainActor in
+            self.isMonitoring = false
+        }
+    }
+
     private func getTestAudioURL() -> URL? {
         let bundle: Bundle = {
-            #if SWIFT_PACKAGE
+#if SWIFT_PACKAGE
             return Bundle.module
-            #else
+#else
             return Bundle.main
-            #endif
+#endif
         }()
-        
+
         let filename = selectedTrack.filename
-        return bundle.url(forResource: filename, withExtension: "mp3") ?? 
-               bundle.url(forResource: filename, withExtension: "mp3", subdirectory: "Resources") ??
-               bundle.url(forResource: filename, withExtension: "mp3", subdirectory: "Sounds")
+        return bundle.url(forResource: filename, withExtension: "mp3") ??
+        bundle.url(forResource: filename, withExtension: "mp3", subdirectory: "Resources") ??
+        bundle.url(forResource: filename, withExtension: "mp3", subdirectory: "Sounds")
     }
 
     private func debugListBundleResources() {
         let bundle: Bundle = {
-            #if SWIFT_PACKAGE
+#if SWIFT_PACKAGE
             return Bundle.module
-            #else
+#else
             return Bundle.main
-            #endif
+#endif
         }()
 
         print("📦 Bundle URL:", bundle.bundleURL)
 
         if let resourcesURL = bundle.resourceURL,
            let files = try? FileManager.default.contentsOfDirectory(
-                at: resourcesURL,
-                includingPropertiesForKeys: nil
+            at: resourcesURL,
+            includingPropertiesForKeys: nil
            ) {
             print("📂 Resources folder contents:")
             for url in files {
@@ -392,123 +528,136 @@ public class RadioAudioManager: NSObject, ObservableObject {
         }
     }
 
-
-    private func playAudio(at url: URL, isLocal: Bool) {
-        do {
-            let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.playback, mode: .default, options: [])   // ← no .defaultToSpeaker
-            try session.setActive(true)
-
-            if isMonitoring { stopMonitoring() }
-
-            let file = try AVAudioFile(forReading: url)
-            if !engine.isRunning { try engine.start() }
-
-            playerNode.stop()
-            playerNode.scheduleFile(file, at: nil) { [weak self] in
-                Task { @MainActor in
-                    self?.isPlaying = false
-                }
-            }
-            playerNode.play()
-            isPlaying = true
-            isPaused = false
-            print("▶️ Playing: \(url.lastPathComponent)")
-        } catch {
-            print("Error playing audio: \(error)")
-        }
-    }
+    // MARK: - Public stop/pause/resume (queued)
 
     public func pausePlayback() {
-        if isPlaying {
-            playerNode.pause()
-            noisePlayerNode.pause()
-            isPlaying = false
-            isPaused = true
+        audioQueue.async { [weak self] in
+            guard let self else { return }
+            if self.isPlaying {
+                self.playerNode.pause()
+                self.noisePlayerNode.pause()
+                Task { @MainActor in
+                    self.isPlaying = false
+                    self.isPaused = true
+                }
+            }
         }
     }
 
     public func resumePlayback() {
+        audioQueue.async { [weak self] in
+            self?.resumePlaybackInternal()
+        }
+    }
+
+    private func resumePlaybackInternal() {
         if isPaused {
             playerNode.play()
             noisePlayerNode.play()
-            isPlaying = true
-            isPaused = false
+            Task { @MainActor in
+                self.isPlaying = true
+                self.isPaused = false
+            }
         }
     }
 
     public func stopPlayback() {
-        playerNode.stop()
-        noisePlayerNode.stop()
-        isPlaying = false
-        isPaused = false
+        audioQueue.async { [weak self] in
+            self?.stopPlaybackInternal()
+        }
     }
 
-        public func playSound(_ name: String, rate: Float? = nil) {
-            let bundle: Bundle = {
-                #if SWIFT_PACKAGE
-                return Bundle.module
-                #else
-                return Bundle.main
-                #endif
-            }()
-            
-            guard let url = bundle.url(forResource: name, withExtension: "mp3") ??
-                             bundle.url(forResource: name, withExtension: "mp3", subdirectory: "Resources") else {
-                print("❌ Sound file not found: \(name)")
-                return
-            }
-            
+    private func stopPlaybackInternal() {
+        playerNode.stop()
+        noisePlayerNode.stop()
+        Task { @MainActor in
+            self.isPlaying = false
+            self.isPaused = false
+        }
+    }
+
+    public func playSound(_ name: String, rate: Float? = nil) {
+        // Prepare the player immediately on the calling thread
+        let player: AVAudioPlayer? = {
             do {
-                let player = try AVAudioPlayer(contentsOf: url)
-                player.prepareToPlay()
-                
-                // Clean up old finished players
-                activeTickPlayers.removeAll { !$0.isPlaying }
-                
-                // If it's a tick, add to pool; otherwise replace main UI player
-                if name.contains("tick") {
-                    player.volume = 0.3
-                    player.enableRate = true
-                    
-                    if let rate = rate {
-                        player.rate = rate
-                    } else {
-                        // Default behavior for other ticks if rate not provided
-                        player.rate = 1.0
-                    }
-                    
-                    activeTickPlayers.append(player)
-                    player.play()
+                if let data = self.cachedSoundData[name] {
+                    return try AVAudioPlayer(data: data)
                 } else {
-                    uiSoundPlayer = player
-                    uiSoundPlayer?.play()
+                    let bundle: Bundle = {
+#if SWIFT_PACKAGE
+                        return Bundle.module
+#else
+                        return Bundle.main
+#endif
+                    }()
+                    guard let url = bundle.url(forResource: name, withExtension: "mp3") ??
+                            bundle.url(forResource: name, withExtension: "mp3", subdirectory: "Resources") else {
+                        return nil
+                    }
+                    return try AVAudioPlayer(contentsOf: url)
                 }
             } catch {
-                print("❌ Error playing UI sound: \(error)")
+                print("❌ Error initializing player: \(error)")
+                return nil
             }
-        }        
-            public func triggerHaptic(_ style: UIImpactFeedbackGenerator.FeedbackStyle = .light) {
-                let generator = UIImpactFeedbackGenerator(style: style)
-                generator.prepare()
-                generator.impactOccurred()
+        }()
+
+        guard let player = player else { return }
+        player.prepareToPlay()
+
+        Task { @MainActor in
+            self.tickLock.lock()
+            defer { self.tickLock.unlock() }
+            
+            // Clean up old finished players
+            self.activeTickPlayers.removeAll { !$0.isPlaying }
+
+            if name.contains("tick") {
+                // Throttle tick sounds if too many are playing
+                guard self.activeTickPlayers.count < self.maxTickPlayers else { return }
+                
+                player.volume = 0.3
+                player.enableRate = true
+                player.rate = rate ?? 1.0
+                self.activeTickPlayers.append(player)
+                player.play()
+            } else {
+                self.uiSoundPlayer = player
+                self.uiSoundPlayer?.play()
             }
         }
+    }
+
+    public func triggerHaptic(_ style: UIImpactFeedbackGenerator.FeedbackStyle = .light) {
+        switch style {
+        case .light:
+            lightHaptic.impactOccurred()
+        case .medium:
+            mediumHaptic.impactOccurred()
+        default:
+            let generator = UIImpactFeedbackGenerator(style: style)
+            generator.prepare()
+            generator.impactOccurred()
+        }
+    }
+}
 public struct ContentView: View {
     @StateObject private var audioManager = RadioAudioManager.shared
     @State private var isPlayToggled = false
     @State private var startVolume: Double = 0
-     
-    
+    @State private var lastAngle: Double = 0
+    @State private var angleOffset: Double = 0
+
+
     let volumeSteps = 32
-    
+
     public init() {}
 
     public var body: some View {
         ZStack {
             Color(red: 0xF7/255, green: 0xF7/255, blue: 0xF6/255)
                 .ignoresSafeArea()
-            
+
             VStack(spacing: 20) {
                 // Speaker Image
                 Image("speaker")
@@ -523,19 +672,19 @@ public struct ContentView: View {
                         .resizable()
                         .scaledToFit()
                         .frame(width: 350)
-                    
+
                     VStack {
                         HStack {
                             Text("Music")
                                 .font(.custom("LED Dot-Matrix", size: 14))
-                            
+
                             Spacer()
-                            
+
                             Text("FM")
-                             .font(.custom("LED Dot-Matrix", size: 14))
+                                .font(.custom("LED Dot-Matrix", size: 14))
                         }
                         .padding(.bottom, 5)
-                        
+
                         // Track List Overlay
                         VStack(alignment: .leading, spacing: 4) {
                             ForEach(visibleTracks) { track in
@@ -553,7 +702,7 @@ public struct ContentView: View {
                                             .font(.custom("LED Dot-Matrix", size: 14))
                                             .foregroundColor(audioManager.selectedTrack == track ? .black : .black.opacity(0.2))
                                             .padding(.leading, audioManager.selectedTrack == track ? 5 : 0)
-                                        
+
                                         Text(track.title.uppercased())
                                             .font(.custom("LED Dot-Matrix", size: 14))
                                             .foregroundColor(audioManager.selectedTrack == track ? .black : .black.opacity(0.2))
@@ -573,8 +722,8 @@ public struct ContentView: View {
                     .animation(nil, value: audioManager.selectedTrackIndex)
                     // Position to match screen in the PNG
                     .frame(width: 260, height: 140) // screen size
-                   // move into screen area
-                    
+                    // move into screen area
+
                     // Prevent UI from leaking outside screen
                     .clipped()
                 }
@@ -607,12 +756,12 @@ public struct ContentView: View {
                                     .frame(width: 112.5, height: 112.5)
                                     .shadow(color: .black.opacity(0.2), radius: 2.4, x: 5, y: 7)
                                     .shadow(color: .black.opacity(0.76), radius: 2.45, x: 1, y: 2)
-                                
+
                                 Image("knob_black_ring")
                                     .resizable()
                                     .scaledToFit()
                                     .frame(width: 116)
-                                
+
                                 // Control knob (rotates)
                                 Image("knob_control")
                                     .resizable()
@@ -623,48 +772,43 @@ public struct ContentView: View {
                                     .gesture(
                                         DragGesture()
                                             .onChanged { value in
-                                                // Center of the knob in local coordinates (roughly 116/2)
                                                 let center = CGPoint(x: 58, y: 58)
-                                                
-                                                // Calculate angles
-                                                let startVector = CGVector(dx: value.startLocation.x - center.x, dy: value.startLocation.y - center.y)
                                                 let currentVector = CGVector(dx: value.location.x - center.x, dy: value.location.y - center.y)
-                                                
-                                                let startAngle = atan2(startVector.dy, startVector.dx)
                                                 let currentAngle = atan2(currentVector.dy, currentVector.dx)
-                                                
-                                                var angleDiff = currentAngle - startAngle
-                                                
-                                                // Normalize angle difference to avoid jumps
-                                                if angleDiff > .pi { angleDiff -= 2 * .pi }
-                                                if angleDiff < -.pi { angleDiff += 2 * .pi }
-                                                
-                                                if value.startLocation == value.location {
-                                                    startVolume = audioManager.volume
-                                                }
-                                                
-                                                // Map rotation angle (-PI to PI) to volume change
-                                                // 240 degrees (roughly 4.2 radians) = full volume range
-                                                let rotationSensitivity: Double = 4.2
-                                                let drag = Double(angleDiff) / rotationSensitivity
 
-                                                let raw = startVolume + drag
-                                                let newVolume = quantize(max(0, min(1, raw)))
-                                                
+                                                // Convert radians to degrees and align with SwiftUI's rotation (0 is up)
+                                                var currentDeg = Double(currentAngle) * 180.0 / .pi + 90.0
+                                                if currentDeg > 180 { currentDeg -= 360 }
+                                                if currentDeg < -180 { currentDeg += 360 }
+
+                                                if value.startLocation == value.location {
+                                                    // Calculate the difference between finger angle and knob angle
+                                                    let initialKnobDeg = audioManager.volume * 240.0 - 120.0
+                                                    angleOffset = currentDeg - initialKnobDeg
+                                                }
+
+                                                var targetDeg = currentDeg - angleOffset
+
+                                                // Normalize targetDeg to stay within a reasonable range around the knob's arc
+                                                if targetDeg > 180 { targetDeg -= 360 }
+                                                if targetDeg < -180 { targetDeg += 360 }
+
+                                                // Map -120...120 degrees to 0...1 volume
+                                                let newVolume = quantize(max(0, min(1, (targetDeg + 120.0) / 240.0)))
+
                                                 if newVolume != audioManager.volume {
                                                     audioManager.triggerHaptic(.light)
-                                                    
-                                                    // Map 0.0...1.0 to 0.7...1.7 rate for clear pitch ascending/descending
+
                                                     let calculatedRate = Float(0.7 + (newVolume * 1.0))
                                                     audioManager.playSound("volume-tick-1", rate: calculatedRate)
-                                                    
+
                                                     audioManager.volume = newVolume
                                                 }
                                             }
                                     )
                             }
                         }
-                        
+
                         Text("VOLUME")
                             .font(.custom("LED Dot-Matrix", size: 10))
                             .foregroundColor(.black.opacity(0.5))
@@ -672,62 +816,66 @@ public struct ContentView: View {
                     .padding(.leading, 30)
                     Spacer()
                 }
-                
-                // Playback Controls (Bottom Row)
-                HStack(spacing: 5) {
-                    controlButton(icon: "ic_replay") {
-                        audioManager.triggerHaptic(.medium)
-                        audioManager.playSound("button-click")
-                        audioManager.stopPlayback()
-                        audioManager.playTestAudio()
-                    }
-                    
-                    controlButton(icon: "ic_previous") {
-                        audioManager.triggerHaptic(.medium)
-                        audioManager.playSound("button-click")
-                        var transaction = Transaction()
-                        transaction.disablesAnimations = true
-                        withTransaction(transaction) {
-                            let prevIndex = (audioManager.selectedTrackIndex - 1 + audioManager.availableTracks.count) % audioManager.availableTracks.count
-                            audioManager.playTrack(at: prevIndex)
-                        }
-                    }
-                    
-                    controlButton(
-                        icon: isPlayToggled ? "ic_pause" : "ic_play",
-                        background: isPlayToggled ? "button_disable" : "button_enable"
-                    ) {
-                        audioManager.triggerHaptic(.medium)
-                        if isPlayToggled {
-                            audioManager.playSound("button-click")
-                            audioManager.stopPlayback()
-                            isPlayToggled = false
-                        } else {
-                            audioManager.playSound("button-release")
-                            audioManager.playTestAudio()
-                            isPlayToggled = true
-                        }
-                    }
-                    
-                    controlButton(icon: "ic_next") {
-                        audioManager.triggerHaptic(.medium)
-                        audioManager.playSound("button-click")
-                        var transaction = Transaction()
-                        transaction.disablesAnimations = true
-                        withTransaction(transaction) {
-                            let nextIndex = (audioManager.selectedTrackIndex + 1) % audioManager.availableTracks.count
-                            audioManager.playTrack(at: nextIndex)
-                        }
-                    }
-                    
-                    controlButton(icon: "ic_stop") {
-                        audioManager.triggerHaptic(.medium)
-                        audioManager.playSound("button-click")
-                        audioManager.stopPlayback()
-                        isPlayToggled = false
-                    }
-                }
-                .padding(.vertical, 3)
+
+                                                                // Playback Controls (Bottom Row)
+                                                                HStack(spacing: 5) {
+                                                                    controlButton(icon: "ic_replay", isActive: false, altIcon: nil) {
+                                                                        audioManager.triggerHaptic(.light)
+                                                                        audioManager.playSound("button-click")
+                                                                        audioManager.stopPlayback()
+                                                                        audioManager.playTestAudio()
+                                                                    }
+                                                                    
+                                                                    controlButton(icon: "ic_previous", isActive: false, altIcon: nil) {
+                                                                        audioManager.triggerHaptic(.light)
+                                                                        audioManager.playSound("button-click")
+                                                                        var transaction = Transaction()
+                                                                        transaction.disablesAnimations = true
+                                                                        withTransaction(transaction) {
+                                                                            let prevIndex = (audioManager.selectedTrackIndex - 1 + audioManager.availableTracks.count) % audioManager.availableTracks.count
+                                                                            audioManager.playTrack(at: prevIndex, autoPlay: audioManager.isPlaying)
+                                                                        }
+                                                                    }
+                                                                    
+                                                                                        controlButton(
+                                                                                            icon: isPlayToggled ? "ic_pause" : "ic_play",
+                                                                                            background: "button_enable",
+                                                                                            isActive: isPlayToggled,
+                                                                                            altIcon: isPlayToggled ? "ic_play" : "ic_pause"
+                                                                                        ) {
+                                                                                            var transaction = Transaction()
+                                                                                            transaction.disablesAnimations = true
+                                                                                            withTransaction(transaction) {
+                                                                                                audioManager.triggerHaptic(.light)
+                                                                                                if isPlayToggled {
+                                                                                                    audioManager.playSound("button-click")
+                                                                                                    audioManager.stopPlayback()
+                                                                                                    isPlayToggled = false
+                                                                                                } else {
+                                                                                                    audioManager.playSound("button-release")
+                                                                                                    audioManager.playTestAudio()
+                                                                                                    isPlayToggled = true
+                                                                                                }
+                                                                                            }
+                                                                                        }                                                                    
+                                                                    controlButton(icon: "ic_next", isActive: false, altIcon: nil) {
+                                                                        audioManager.triggerHaptic(.light)
+                                                                        audioManager.playSound("button-click")
+                                                                        var transaction = Transaction()
+                                                                        transaction.disablesAnimations = true
+                                                                        withTransaction(transaction) {
+                                                                            let nextIndex = (audioManager.selectedTrackIndex + 1) % audioManager.availableTracks.count
+                                                                            audioManager.playTrack(at: nextIndex, autoPlay: audioManager.isPlaying)
+                                                                        }
+                                                                    }
+                                                                    
+                                                                    controlButton(icon: "ic_stop", isActive: false, altIcon: nil) {
+                                                                        audioManager.triggerHaptic(.light)
+                                                                        audioManager.playSound("button-click")
+                                                                        audioManager.stopPlayback()
+                                                                        isPlayToggled = false
+                                                                    }
+                                                                }                .padding(.vertical, 3)
                 .padding(.horizontal, 2)
                 .background(
                     RoundedRectangle(cornerRadius: 5)
@@ -737,47 +885,48 @@ public struct ContentView: View {
             }
         }
     }
-    
+
     // Helper for styled control buttons (uniform size)
-    private func controlButton(
-        icon: String,
-        background: String = "button_enable",
-        size: CGFloat = 65,
-        action: @escaping () -> Void
-    ) -> some View {
-        
-        Button(action: action) {
-            ZStack {
-                // The background is now managed by the ButtonStyle configuration
-                Image(icon)
-                    .resizable()
-                    .scaledToFit()
-                    .frame(width: size * 0.35, height: size * 0.35)
-                    .animation(nil, value: icon)
-            }
-            .frame(width: size, height: size * 0.6)
-        }
-        .buttonStyle(NoAnimationButtonStyle(baseBackground: background, size: size)) 
-    }
-    
-    // Logic to show only 3 tracks around the selected one
+            private func controlButton(
+                icon: String,
+                background: String = "button_enable",
+                isActive: Bool = false,
+                altIcon: String? = nil,
+                size: CGFloat = 65,
+                action: @escaping () -> Void
+            ) -> some View {
+                
+                Button(action: action) {
+                    ZStack {
+                        // The background is now managed by the ButtonStyle configuration
+
+                        Image(icon)
+                            .resizable()
+                            .scaledToFit()
+                            .frame(width: size * 0.35, height: size * 0.35)
+                            .animation(nil, value: icon)
+                    }
+                    .frame(width: size, height: size * 0.6)
+                }
+                .buttonStyle(NoAnimationButtonStyle(baseBackground: background, isActive: isActive, altIcon: altIcon, size: size)) 
+            }    // Logic to show only 3 tracks around the selected one
     private var visibleTracks: [AudioTrack] {
         let count = audioManager.availableTracks.count
         if count == 0 { return [] }
-        
+
         let current = audioManager.selectedTrackIndex
-        
+
         // Show previous, current, and next
         let prev = (current - 1 + count) % count
         let next = (current + 1) % count
-        
+
         return [
             audioManager.availableTracks[prev],
             audioManager.availableTracks[current],
             audioManager.availableTracks[next]
         ]
     }
-    
+
     func quantize(_ value: Double) -> Double {
         let step = 1.0 / Double(volumeSteps - 1)
         return (value / step).rounded() * step
@@ -786,20 +935,29 @@ public struct ContentView: View {
 
 struct NoAnimationButtonStyle: ButtonStyle {
     let baseBackground: String
+    let isActive: Bool
+    let altIcon: String?
     let size: CGFloat
 
     func makeBody(configuration: Configuration) -> some View {
         ZStack {
-            Image(configuration.isPressed ? "button_disable" : baseBackground)
+            // Show disable if pressed OR if it's the active toggled state
+            Image((configuration.isPressed || isActive) ? "button_disable" : baseBackground)
                 .resizable()
                 .frame(width: size, height: size * 0.6)
-                .animation(nil, value: configuration.isPressed)
+                .animation(nil, value: configuration.isPressed || isActive)
             
-            configuration.label
+            if configuration.isPressed, let alt = altIcon {
+                Image(alt)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: size * 0.35, height: size * 0.35)
+            } else {
+                configuration.label
+            }
         }
     }
 }
-
 struct PlainNoAnimationButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
@@ -813,11 +971,11 @@ extension Color {
         let hex = hex.trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
         var int: UInt64 = 0
         Scanner(string: hex).scanHexInt64(&int)
-        
+
         let r = Double((int >> 16) & 0xFF) / 255
         let g = Double((int >> 8) & 0xFF) / 255
         let b = Double(int & 0xFF) / 255
-        
+
         self.init(red: r, green: g, blue: b)
     }
 }

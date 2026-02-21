@@ -1,6 +1,7 @@
 import SwiftUI
 import Foundation
 import AVFoundation
+import AVKit
 
 public struct AudioTrack: Identifiable, Equatable {
     public let id = UUID()
@@ -55,6 +56,7 @@ public class RadioAudioManager: NSObject, ObservableObject {
 
     @Published var isPlaying = false
     @Published var isPaused = false
+    
     @Published var isMonitoring = false
     @Published var isAutoEchoEnabled = false
     @Published var currentFilter: RadioFilter = .amRadio
@@ -95,11 +97,11 @@ public class RadioAudioManager: NSObject, ObservableObject {
     private func preloadUISounds() {
         let sounds = ["button-click", "button-release", "volume-tick-1"]
         let bundle: Bundle = {
-#if SWIFT_PACKAGE
+            #if SWIFT_PACKAGE
             return Bundle.module
-#else
+            #else
             return Bundle.main
-#endif
+            #endif
         }()
 
         for name in sounds {
@@ -155,7 +157,6 @@ public class RadioAudioManager: NSObject, ObservableObject {
     }
 
     func startMonitoring() {
-        // Keep monitoring path as-is but stop via queue
         stopPlayback()
 
         do {
@@ -200,7 +201,6 @@ public class RadioAudioManager: NSObject, ObservableObject {
     }
 
     func stopMonitoring() {
-        // ensure no race with playback
         audioQueue.async { [weak self] in
             guard let self else { return }
             self.engine.stop()
@@ -226,8 +226,6 @@ public class RadioAudioManager: NSObject, ObservableObject {
             }
         }
     }
-
-
 
     private func loadNoiseBuffer() {
         let format = engine.mainMixerNode.outputFormat(forBus: 0)
@@ -412,8 +410,6 @@ public class RadioAudioManager: NSObject, ObservableObject {
         }
     }
 
-    // MARK: - Internal playback helpers (called only on audioQueue)
-
     private func playTestAudioInternal() {
         if isPaused {
             resumePlaybackInternal()
@@ -431,7 +427,6 @@ public class RadioAudioManager: NSObject, ObservableObject {
     private func playAudioInternal(at url: URL) {
         do {
             let session = AVAudioSession.sharedInstance()
-            // Category is already set in setupEngine; ensure active
             if session.category != .playback {
                 try session.setCategory(.playback, mode: .default, options: [])
             }
@@ -490,11 +485,11 @@ public class RadioAudioManager: NSObject, ObservableObject {
 
     private func getTestAudioURL() -> URL? {
         let bundle: Bundle = {
-#if SWIFT_PACKAGE
+            #if SWIFT_PACKAGE
             return Bundle.module
-#else
+            #else
             return Bundle.main
-#endif
+            #endif
         }()
 
         let filename = selectedTrack.filename
@@ -505,11 +500,11 @@ public class RadioAudioManager: NSObject, ObservableObject {
 
     private func debugListBundleResources() {
         let bundle: Bundle = {
-#if SWIFT_PACKAGE
+            #if SWIFT_PACKAGE
             return Bundle.module
-#else
+            #else
             return Bundle.main
-#endif
+            #endif
         }()
 
         print("📦 Bundle URL:", bundle.bundleURL)
@@ -527,8 +522,6 @@ public class RadioAudioManager: NSObject, ObservableObject {
             print("⚠️ Could not list bundle resources")
         }
     }
-
-    // MARK: - Public stop/pause/resume (queued)
 
     public func pausePlayback() {
         audioQueue.async { [weak self] in
@@ -577,18 +570,17 @@ public class RadioAudioManager: NSObject, ObservableObject {
     }
 
     public func playSound(_ name: String, rate: Float? = nil) {
-        // Prepare the player immediately on the calling thread
         let player: AVAudioPlayer? = {
             do {
                 if let data = self.cachedSoundData[name] {
                     return try AVAudioPlayer(data: data)
                 } else {
                     let bundle: Bundle = {
-#if SWIFT_PACKAGE
+                        #if SWIFT_PACKAGE
                         return Bundle.module
-#else
+                        #else
                         return Bundle.main
-#endif
+                        #endif
                     }()
                     guard let url = bundle.url(forResource: name, withExtension: "mp3") ??
                             bundle.url(forResource: name, withExtension: "mp3", subdirectory: "Resources") else {
@@ -609,13 +601,10 @@ public class RadioAudioManager: NSObject, ObservableObject {
             self.tickLock.lock()
             defer { self.tickLock.unlock() }
 
-            // Clean up old finished players
             self.activeTickPlayers.removeAll { !$0.isPlaying }
 
             if name.contains("tick") {
-                // Throttle tick sounds if too many are playing
                 guard self.activeTickPlayers.count < self.maxTickPlayers else { return }
-
                 player.volume = 0.1
                 player.enableRate = true
                 player.rate = rate ?? 1.0
@@ -641,6 +630,7 @@ public class RadioAudioManager: NSObject, ObservableObject {
         }
     }
 }
+
 public struct ContentView: View {
     @StateObject private var audioManager = RadioAudioManager.shared
     @State private var isPlayToggled = false
@@ -650,7 +640,6 @@ public struct ContentView: View {
 
     @State private var showVolumeDisplay = false
     @State private var volumeTimer: Timer?
-
 
     let volumeSteps = 32
 
@@ -678,25 +667,44 @@ public struct ContentView: View {
 
                     VStack {
                         HStack {
-                            Text(showVolumeDisplay ? "VOLUME" : "MUSIC")
-                                .font(.custom("LED Dot-Matrix", size: 14))
-
+                            if showVolumeDisplay {
+                                Text("VOLUME")
+                                    .font(.custom("LED Dot-Matrix", size: 12))
+                            } else if !audioManager.isPlaying {
+                                Text("MUSIC")
+                                    .font(.custom("LED Dot-Matrix", size: 12))
+                            }
+                            
                             Spacer()
-
+                            
                             if showVolumeDisplay {
                                 Text("\(Int(audioManager.volume * 100))%")
-                                    .font(.custom("LED Dot-Matrix", size: 14))
-                            } else {
+                                    .font(.custom("LED Dot-Matrix", size: 12))
+                            } else if !audioManager.isPlaying {
                                 Text("FM")
-                                    .font(.custom("LED Dot-Matrix", size: 14))
+                                    .font(.custom("LED Dot-Matrix", size: 12))
                             }
                         }
                         .padding(.bottom, 5)
-
+                        
                         // Content Area
                         if showVolumeDisplay {
-                            VolumeIndicatorView(volume: audioManager.volume)
-                        } else {                                                // Track List Overlay
+                            HStack(alignment: .bottom) {
+                                Text("MIN")
+                                    .font(Font.custom("LED Dot-Matrix", size: 10))
+
+                                VolumeIndicatorView(volume: audioManager.volume)
+                                    .offset(y: 5)
+
+                                Text("MAX")
+                                    .font(Font.custom("LED Dot-Matrix", size: 10))
+                            }
+                            .padding(.top, 10)
+                            .frame(maxWidth: 200, maxHeight: 45)
+                        } else if audioManager.isPlaying {
+                            PlayingVisualizerView()
+                        } else {
+                            // Track List Overlay
                             VStack(alignment: .leading, spacing: 4) {
                                 ForEach(visibleTracks) { track in
                                     Button(action: {
@@ -713,12 +721,13 @@ public struct ContentView: View {
                                                 .font(.custom("LED Dot-Matrix", size: 14))
                                                 .foregroundColor(audioManager.selectedTrack == track ? .black : .black.opacity(0.2))
                                                 .padding(.leading, audioManager.selectedTrack == track ? 5 : 0)
-
+                                            
                                             Text(track.title.uppercased())
                                                 .font(.custom("LED Dot-Matrix", size: 14))
                                                 .foregroundColor(audioManager.selectedTrack == track ? .black : .black.opacity(0.2))
                                                 .lineLimit(1)
                                         }
+                                        .offset(y: 5)
                                     }
                                     .buttonStyle(PlainNoAnimationButtonStyle())
                                 }
@@ -732,21 +741,15 @@ public struct ContentView: View {
                         }
                     }
                     .animation(nil, value: showVolumeDisplay)
+                    .animation(nil, value: audioManager.isPlaying)
                     .animation(nil, value: audioManager.selectedTrackIndex)
-                    // Position to match screen in the PNG
-                    .frame(width: 260, height: 140) // screen size
-
-                    // move into screen area
-
-                    // Prevent UI from leaking outside screen
+                    .frame(width: 260, height: 140)
                     .clipped()
                 }
 
-                Spacer ()
+                Spacer()
 
-
-
-                // Volume Control (Left Aligned above buttons)
+                // Volume Control
                 HStack {
                     VStack(spacing: 5) {
                         ZStack {
@@ -758,7 +761,6 @@ public struct ContentView: View {
                                 .offset(x: -1, y: -18)
 
                             ZStack {
-                                // Shadow (static, bottom layer)
                                 Circle()
                                     .fill(
                                         LinearGradient(
@@ -779,7 +781,6 @@ public struct ContentView: View {
                                     .scaledToFit()
                                     .frame(width: 116)
 
-                                // Control knob (rotates)
                                 Image("knob_control")
                                     .resizable()
                                     .scaledToFit()
@@ -793,37 +794,31 @@ public struct ContentView: View {
                                                 let currentVector = CGVector(dx: value.location.x - center.x, dy: value.location.y - center.y)
                                                 let currentAngle = atan2(currentVector.dy, currentVector.dx)
 
-                                                // Convert radians to degrees and align with SwiftUI's rotation (0 is up)
                                                 var currentDeg = Double(currentAngle) * 180.0 / .pi + 90.0
                                                 if currentDeg > 180 { currentDeg -= 360 }
                                                 if currentDeg < -180 { currentDeg += 360 }
 
                                                 if value.startLocation == value.location {
-                                                    // Calculate the difference between finger angle and knob angle
                                                     let initialKnobDeg = audioManager.volume * 240.0 - 120.0
                                                     angleOffset = currentDeg - initialKnobDeg
                                                 }
 
                                                 var targetDeg = currentDeg - angleOffset
-
-                                                // Normalize targetDeg to stay within a reasonable range around the knob's arc
                                                 if targetDeg > 180 { targetDeg -= 360 }
                                                 if targetDeg < -180 { targetDeg += 360 }
 
-                                                // Map -120...120 degrees to 0...1 volume
                                                 let newVolume = quantize(max(0, min(1, (targetDeg + 120.0) / 240.0)))
 
                                                 if newVolume != audioManager.volume {
                                                     showVolume()
                                                     audioManager.triggerHaptic(.light)
-
                                                     let calculatedRate = Float(0.7 + (newVolume * 1.0))
                                                     audioManager.playSound("volume-tick-1", rate: calculatedRate)
-
                                                     audioManager.volume = newVolume
                                                 }
                                             }
-                                    )                            }
+                                    )
+                            }
                         }
 
                         Text("VOLUME")
@@ -834,7 +829,7 @@ public struct ContentView: View {
                     Spacer()
                 }
 
-                // Playback Controls (Bottom Row)
+                // Playback Controls
                 HStack(spacing: 5) {
                     controlButton(icon: "ic_replay", isActive: false, altIcon: nil) {
                         audioManager.triggerHaptic(.light)
@@ -913,7 +908,6 @@ public struct ContentView: View {
         }
     }
 
-    // Helper for styled control buttons (uniform size)
     private func controlButton(
         icon: String,
         background: String = "button_enable",
@@ -922,9 +916,7 @@ public struct ContentView: View {
         size: CGFloat = 65,
         action: @escaping () -> Void
     ) -> some View {
-
         Button(action: action) {
-            // Label is empty because ButtonStyle handles everything now
             Color.clear.frame(width: size, height: size * 0.6)
         }
         .buttonStyle(NoAnimationButtonStyle(
@@ -935,17 +927,13 @@ public struct ContentView: View {
             size: size
         ))
     }
-    // Logic to show only 3 tracks around the selected one
+
     private var visibleTracks: [AudioTrack] {
         let count = audioManager.availableTracks.count
         if count == 0 { return [] }
-
         let current = audioManager.selectedTrackIndex
-
-        // Show previous, current, and next
         let prev = (current - 1 + count) % count
         let next = (current + 1) % count
-
         return [
             audioManager.availableTracks[prev],
             audioManager.availableTracks[current],
@@ -971,19 +959,70 @@ public struct ContentView: View {
     }
 }
 
+struct PlayingVisualizerView: View {
+    var body: some View {
+        LoopingVideoPlayer(videoName: "playing-visualizer-3")
+            .frame(height: 90)
+            .clipped()
+            .grayscale(1.0)
+            .contrast(1.5)
+    }
+}
+
+struct LoopingVideoPlayer: UIViewRepresentable {
+    let videoName: String
+    func makeUIView(context: Context) -> UIView {
+        return LoopingVideoPlayerUIView(videoName: videoName)
+    }
+    func updateUIView(_ uiView: UIView, context: Context) {}
+}
+
+class LoopingVideoPlayerUIView: UIView {
+    private let playerLayer = AVPlayerLayer()
+    private var playerLooper: AVPlayerLooper?
+    private var queuePlayer: AVQueuePlayer?
+    init(videoName: String) {
+        super.init(frame: .zero)
+        let bundle: Bundle = {
+            #if SWIFT_PACKAGE
+            return Bundle.module
+            #else
+            return Bundle.main
+            #endif
+        }()
+        guard let fileURL = bundle.url(forResource: videoName, withExtension: "mov") ??
+                             bundle.url(forResource: videoName, withExtension: "mov", subdirectory: "Resources") ??
+                             bundle.url(forResource: videoName, withExtension: "mp4") ??
+                             bundle.url(forResource: videoName, withExtension: "mp4", subdirectory: "Resources") else {
+            return
+        }
+        let asset = AVAsset(url: fileURL)
+        let item = AVPlayerItem(asset: asset)
+        let player = AVQueuePlayer(playerItem: item)
+        player.isMuted = true
+        self.queuePlayer = player
+        self.playerLooper = AVPlayerLooper(player: player, templateItem: item)
+        playerLayer.player = player
+        playerLayer.videoGravity = .resizeAspectFill
+        layer.addSublayer(playerLayer)
+        player.play()
+    }
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        playerLayer.frame = bounds
+    }
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+}
+
 struct VolumeIndicatorView: View {
     let volume: Double
-
     var body: some View {
         HStack(alignment: .bottom, spacing: 10) {
             ForEach(0..<6) { index in
-                // index 0 is left, index 5 is right
-                // Heights: 4, 7, 10, 13, 16, 19 segments
                 let segmentCount = 2 + (index * 3)
-
-                // Threshold: Left bar (index 0) lights up first, Right bar (index 5) last
                 let threshold = Double(index) / 6.0
-
                 VStack(spacing: -13) {
                     ForEach(0..<segmentCount, id: \.self) { _ in
                         Text("-")
@@ -993,8 +1032,7 @@ struct VolumeIndicatorView: View {
                 .foregroundColor(volume > threshold ? .black : .black.opacity(0.2))
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: 30, alignment: .center)
-        .padding(.bottom, 5)
+        .frame(maxWidth: .infinity, maxHeight: 30, alignment: .bottom)
     }
 }
 
@@ -1004,18 +1042,13 @@ struct NoAnimationButtonStyle: ButtonStyle {
     let altIcon: String?
     let isActive: Bool
     let size: CGFloat
-
     func makeBody(configuration: Configuration) -> some View {
         let isPressedOrActive = configuration.isPressed || isActive
         let currentIcon = (configuration.isPressed && altIcon != nil) ? altIcon! : baseIcon
-
         return ZStack {
-            // Background
             Image(isPressedOrActive ? "button_disable" : baseBackground)
                 .resizable()
                 .frame(width: size, height: size * 0.6)
-
-            // Icon
             Image(currentIcon)
                 .resizable()
                 .scaledToFit()
@@ -1023,6 +1056,7 @@ struct NoAnimationButtonStyle: ButtonStyle {
         }
     }
 }
+
 struct PlainNoAnimationButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
@@ -1036,11 +1070,9 @@ extension Color {
         let hex = hex.trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
         var int: UInt64 = 0
         Scanner(string: hex).scanHexInt64(&int)
-
         let r = Double((int >> 16) & 0xFF) / 255
         let g = Double((int >> 8) & 0xFF) / 255
         let b = Double(int & 0xFF) / 255
-
         self.init(red: r, green: g, blue: b)
     }
 }

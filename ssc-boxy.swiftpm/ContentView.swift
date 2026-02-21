@@ -703,6 +703,7 @@ public struct ContentView: View {
                             .frame(maxWidth: 200, maxHeight: 45)
                         } else if audioManager.isPlaying {
                             PlayingVisualizerView()
+                                .offset(y: -5)
                         } else {
                             // Track List Overlay
                             VStack(alignment: .leading, spacing: 4) {
@@ -962,10 +963,11 @@ public struct ContentView: View {
 struct PlayingVisualizerView: View {
     var body: some View {
         LoopingVideoPlayer(videoName: "playing-visualizer-3")
-            .frame(height: 90)
-            .clipped()
+            .frame(width: 350, height: 80)
+            .clipShape(.rect)
+            .cornerRadius(10)
+            .scaledToFit()
             .grayscale(1.0)
-            .contrast(1.5)
     }
 }
 

@@ -56,7 +56,7 @@ public class RadioAudioManager: NSObject, ObservableObject {
 
     @Published var isPlaying = false
     @Published var isPaused = false
-    
+
     @Published var isMonitoring = false
     @Published var isAutoEchoEnabled = false
     @Published var currentFilter: RadioFilter = .amRadio
@@ -97,11 +97,11 @@ public class RadioAudioManager: NSObject, ObservableObject {
     private func preloadUISounds() {
         let sounds = ["button-click", "button-release", "volume-tick-1"]
         let bundle: Bundle = {
-            #if SWIFT_PACKAGE
+#if SWIFT_PACKAGE
             return Bundle.module
-            #else
+#else
             return Bundle.main
-            #endif
+#endif
         }()
 
         for name in sounds {
@@ -496,11 +496,11 @@ public class RadioAudioManager: NSObject, ObservableObject {
 
     private func getAudioURL(for track: AudioTrack) -> URL? {
         let bundle: Bundle = {
-            #if SWIFT_PACKAGE
+#if SWIFT_PACKAGE
             return Bundle.module
-            #else
+#else
             return Bundle.main
-            #endif
+#endif
         }()
 
         let filename = track.filename
@@ -511,11 +511,11 @@ public class RadioAudioManager: NSObject, ObservableObject {
 
     private func debugListBundleResources() {
         let bundle: Bundle = {
-            #if SWIFT_PACKAGE
+#if SWIFT_PACKAGE
             return Bundle.module
-            #else
+#else
             return Bundle.main
-            #endif
+#endif
         }()
 
         print("📦 Bundle URL:", bundle.bundleURL)
@@ -587,11 +587,11 @@ public class RadioAudioManager: NSObject, ObservableObject {
                     return try AVAudioPlayer(data: data)
                 } else {
                     let bundle: Bundle = {
-                        #if SWIFT_PACKAGE
+#if SWIFT_PACKAGE
                         return Bundle.module
-                        #else
+#else
                         return Bundle.main
-                        #endif
+#endif
                     }()
                     guard let url = bundle.url(forResource: name, withExtension: "mp3") ??
                             bundle.url(forResource: name, withExtension: "mp3", subdirectory: "Resources") else {
@@ -654,6 +654,10 @@ public struct ContentView: View {
     @State private var showNowPlayingOverlay = false
     @State private var nowPlayingTimer: Timer?
 
+    // Power Animation States (LCD Backlight Fade)
+    @State private var isScreenOn = true
+    @State private var isContentVisible = true
+
     let volumeSteps = 32
 
     public init() {}
@@ -662,6 +666,27 @@ public struct ContentView: View {
         ZStack {
             Color(red: 0xF7/255, green: 0xF7/255, blue: 0xF6/255)
                 .ignoresSafeArea()
+
+            VStack {
+                Rectangle()
+                    .fill(
+                        LinearGradient(
+                            stops: [
+                                Gradient.Stop(color: Color(red: 0.91, green: 0.91, blue: 0.91), location: 0.00),
+                                Gradient.Stop(color: Color(red: 0.84, green: 0.84, blue: 0.84), location: 0.60),
+                                Gradient.Stop(color: Color(red: 0.62, green: 0.62, blue: 0.62), location: 1.00),
+                            ],
+                            startPoint: UnitPoint(x: 0, y: 0),
+                            endPoint: UnitPoint(x: 0.96, y: 1.06)
+                        )
+                        .shadow(.inner(color: .white.opacity(0.5), radius: 4.7, x: 0, y: -4))
+                        .shadow(.inner(color: .black.opacity(0.25), radius: 1.9, x: 0, y: -1))
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: 550)
+                    .shadow(color: .black.opacity(0.41), radius: 1.7, x: 0, y: 1.8)
+                Spacer()
+            }
+            .ignoresSafeArea()
 
             VStack(spacing: 20) {
                 // Speaker Image
@@ -673,116 +698,120 @@ public struct ContentView: View {
 
                 // Display with Song List & Volume Indicator
                 ZStack {
+                    Image("display_off")
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 350, height: 160)
+
                     Image("display_on")
                         .resizable()
                         .scaledToFit()
-                        .frame(width: 350)
+                        .frame(width: 350, height: 160)
+                        .opacity(isScreenOn ? 1 : 0)
 
-                    VStack {
-                        HStack {
-                            if showVolumeDisplay {
-                                Text("VOLUME")
-                                    .font(.custom("LED Dot-Matrix", size: 12))
-                            } else if !audioManager.isPlaying {
-                                Text("MUSIC")
-                                    .font(.custom("LED Dot-Matrix", size: 12))
-                            }
-                            
-                            Spacer()
-                            
-                            if showVolumeDisplay {
-                                Text("\(Int(audioManager.volume * 100))%")
-                                    .font(.custom("LED Dot-Matrix", size: 12))
-                            } else if !audioManager.isPlaying {
-                                Text("FM")
-                                    .font(.custom("LED Dot-Matrix", size: 12))
-                            }
-                        }
-                        .padding(.bottom, 5)
-                        
-                        // Content Area
-                        if showVolumeDisplay {
-                            HStack(alignment: .bottom) {
-                                Text("MIN")
-                                    .font(Font.custom("LED Dot-Matrix", size: 10))
+                    if isContentVisible {
 
-                                VolumeIndicatorView(volume: audioManager.volume)
-                                    .offset(y: 5)
+                        VStack {
+                            HStack {
+                                if showVolumeDisplay {
+                                    Text("VOLUME")
+                                        .font(.custom("LED Dot-Matrix", size: 12))
+                                } else if !audioManager.isPlaying {
+                                    Text("MUSIC")
+                                        .font(.custom("LED Dot-Matrix", size: 12))
+                                }
 
-                                Text("MAX")
-                                    .font(Font.custom("LED Dot-Matrix", size: 10))
-                            }
-                            .padding(.top, 10)
-                            .frame(maxWidth: 200, maxHeight: 45)
-                        } else if showNowPlayingOverlay && (audioManager.isPlaying || audioManager.isPaused || isPlayToggled) {
-                            VStack(spacing: 8) {
-                                Text("NOW PLAYING")
-                                    .font(.custom("LED Dot-Matrix", size: 10))
-                                    .opacity(0.6)
-                                
-                                Text(audioManager.selectedTrack.title.uppercased())
-                                    .font(.custom("LED Dot-Matrix", size: 14))
-                                    .multilineTextAlignment(.center)
-                                    .padding(.horizontal, 10)
-                                    .lineLimit(2)
-                                    .fixedSize(horizontal: false, vertical: true)
-                                
-                                if let artist = audioManager.selectedTrack.artist {
-                                    Text(artist.uppercased())
-                                        .font(.custom("LED Dot-Matrix", size: 10))
-                                        .opacity(0.8)
+                                Spacer()
+
+                                if showVolumeDisplay {
+                                    Text("\(Int(audioManager.volume * 100))%")
+                                        .font(.custom("LED Dot-Matrix", size: 12))
+                                } else if !audioManager.isPlaying {
+                                    Text("FM")
+                                        .font(.custom("LED Dot-Matrix", size: 12))
                                 }
                             }
-                            .frame(width: 240)
-                        } else if audioManager.isPlaying {
-                            PlayingVisualizerView()
-                                .offset(y: -5)
-                        } else {
-                            // Track List Overlay
-                            VStack(alignment: .leading, spacing: 4) {
-                                ForEach(visibleTracks) { track in
-                                    Button(action: {
-                                        var transaction = Transaction()
-                                        transaction.disablesAnimations = true
-                                        withTransaction(transaction) {
-                                            if let idx = audioManager.availableTracks.firstIndex(of: track) {
-                                                if audioManager.isPlaying {
-                                                    showNowPlaying()
-                                                }
-                                                audioManager.playTrack(at: idx)
-                                            }
-                                        }
-                                    }) {
-                                        HStack(alignment: .top, spacing: 5) {
-                                            Text(audioManager.selectedTrack == track ? ">" : "-")
-                                                .font(.custom("LED Dot-Matrix", size: 14))
-                                                .foregroundColor(audioManager.selectedTrack == track ? .black : .black.opacity(0.2))
-                                                .padding(.leading, audioManager.selectedTrack == track ? 5 : 0)
-                                            
-                                            Text(track.title.uppercased())
-                                                .font(.custom("LED Dot-Matrix", size: 14))
-                                                .foregroundColor(audioManager.selectedTrack == track ? .black : .black.opacity(0.2))
-                                                .lineLimit(1)
-                                        }
+                            .padding(.bottom, 5)
+
+                            // Content Area
+                            if showVolumeDisplay {
+                                HStack(alignment: .bottom) {
+                                    Text("MIN")
+                                        .font(Font.custom("LED Dot-Matrix", size: 10))
+
+                                    VolumeIndicatorView(volume: audioManager.volume)
                                         .offset(y: 5)
-                                    }
-                                    .buttonStyle(PlainNoAnimationButtonStyle())
+
+                                    Text("MAX")
+                                        .font(Font.custom("LED Dot-Matrix", size: 10))
                                 }
+                                .padding(.top, 10)
+                                .frame(maxWidth: 200, maxHeight: 45)
+                            } else if showNowPlayingOverlay && (audioManager.isPlaying || audioManager.isPaused || isPlayToggled) {
+                                VStack(alignment: .center, spacing: 6) {
+                                    Text("NOW PLAYING")
+                                        .font(.custom("LED Dot-Matrix", size: 12))
+                                        .opacity(0.8)
+
+                                    Text(audioManager.selectedTrack.title.uppercased())
+                                        .font(.custom("LED Dot-Matrix", size: 14))
+                                        .multilineTextAlignment(.center)
+                                        .padding(.horizontal, 10)
+                                        .lineLimit(3)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                                .frame(width: 240)
+                            } else if audioManager.isPlaying {
+                                PlayingVisualizerView()
+                                    .offset(y: -5)
+                            } else {
+                                // Track List Overlay
+                                VStack(alignment: .leading, spacing: 4) {
+                                    ForEach(visibleTracks) { track in
+                                        Button(action: {
+                                            var transaction = Transaction()
+                                            transaction.disablesAnimations = true
+                                            withTransaction(transaction) {
+                                                if let idx = audioManager.availableTracks.firstIndex(of: track) {
+                                                    if audioManager.isPlaying {
+                                                        showNowPlaying()
+                                                    }
+                                                    audioManager.playTrack(at: idx)
+                                                }
+                                            }
+                                        }) {
+                                            HStack(alignment: .top, spacing: 5) {
+                                                Text(audioManager.selectedTrack == track ? ">" : "-")
+                                                    .font(.custom("LED Dot-Matrix", size: 14))
+                                                    .foregroundColor(audioManager.selectedTrack == track ? .black : .black.opacity(0.2))
+                                                    .padding(.leading, audioManager.selectedTrack == track ? 5 : 0)
+
+                                                Text(track.title.uppercased())
+                                                    .font(.custom("LED Dot-Matrix", size: 14))
+                                                    .foregroundColor(audioManager.selectedTrack == track ? .black : .black.opacity(0.2))
+                                                    .lineLimit(1)
+                                            }
+                                            .offset(y: 5)
+                                        }
+                                        .buttonStyle(PlainNoAnimationButtonStyle())
+                                    }
+                                }
+                                .animation(nil, value: audioManager.selectedTrackIndex)
+                                .transaction { transaction in
+                                    transaction.disablesAnimations = true
+                                }
+                                .padding(.horizontal, 40)
+                                .frame(width: 300, alignment: .leading)
                             }
-                            .animation(nil, value: audioManager.selectedTrackIndex)
-                            .transaction { transaction in
-                                transaction.disablesAnimations = true
-                            }
-                            .padding(.horizontal, 40)
-                            .frame(width: 300, alignment: .leading)
                         }
-                    }
-                    .animation(nil, value: showVolumeDisplay)
-                    .animation(nil, value: audioManager.isPlaying)
-                    .animation(nil, value: audioManager.selectedTrackIndex)
-                    .frame(width: 260, height: 140)
-                    .clipped()
+                        .animation(nil, value: showVolumeDisplay)
+                        .animation(nil, value: audioManager.isPlaying)
+                        .animation(nil, value: audioManager.selectedTrackIndex)
+                        .frame(width: 260, height: 140)
+                        .clipped()
+                    } // end if isContentVisible
                 }
+
 
                 Spacer()
 
@@ -863,7 +892,89 @@ public struct ContentView: View {
                             .foregroundColor(.black.opacity(0.5))
                     }
                     .padding(.leading, 30)
+
                     Spacer()
+
+                    // Skeuomorphic Rubber Power Button
+                    VStack {
+                        // The unchanging button hole carved into the chassis
+                        ZStack {
+                            Circle()
+                                .fill(Color.black)
+                                .frame(width: 48, height: 48)
+                                .shadow(color: .white.opacity(0.4), radius: 1, x: 0, y: 1) // bottom edge highlight of hole
+
+                            Button(action: {
+                                audioManager.triggerHaptic(.medium) // Keep the physical thud, lose the click
+
+                                if isScreenOn {
+                                    // POWERING DOWN SEQUENCE: Backlight Fade, then LCD text drain
+                                    audioManager.stopPlayback()
+                                    isPlayToggled = false
+
+                                    // 1. Backlight fades out
+                                    withAnimation(.easeOut(duration: 0.2)) {
+                                        isScreenOn = false
+                                    }
+
+                                    // 2. Text drains shortly after
+                                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                                        withAnimation(.easeOut(duration: 0.2)) {
+                                            isContentVisible = false
+                                        }
+                                    }
+                                } else {
+                                    // POWERING UP SEQUENCE: LCD Boot
+
+                                    // 1. Backlight ignites
+                                    withAnimation(.easeIn(duration: 0.15)) {
+                                        isScreenOn = true
+                                    }
+
+                                    // 2. Text boots up slightly later
+                                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                                        withAnimation(.easeIn(duration: 0.2)) {
+                                            isContentVisible = true
+                                        }
+                                    }
+                                }
+                            }) {
+                                ZStack {
+                                    // Actual rubber button (matte pastel green, flatter gradient)
+                                    Circle()
+                                        .fill(
+                                            LinearGradient(
+                                                stops: [
+                                                    .init(color: Color(hex: "c5e6d1"), location: 0.0), // Soft top edge
+                                                    .init(color: Color(hex: "a8d2ba"), location: 0.5), // Matte body
+                                                    .init(color: Color(hex: "92bfa5"), location: 1.0)  // Soft shadow
+                                                ],
+                                                startPoint: .topLeading,
+                                                endPoint: .bottomTrailing
+                                            )
+                                        )
+                                        .frame(width: 44, height: 44)
+                                    // Soft diffused shadow for rubber instead of sharp plastic highlights
+                                        .shadow(color: .black.opacity(0.4), radius: 2, x: 0, y: -1)
+                                        .shadow(color: .black.opacity(0.1), radius: 1, x: 0, y: 1)
+
+                                    // Power Icon slightly inset
+                                    Image(systemName: "power")
+                                        .font(.system(size: 18, weight: .bold))
+                                        .foregroundColor(.black.opacity(0.6))
+                                        .shadow(color: .white.opacity(0.3), radius: 0.5, x: 0, y: 1) // Inset engraving effect
+                                }
+                            }
+                            .buttonStyle(RubberButtonStyle())
+                        }
+
+                        Text("POWER")
+                            .font(.custom("LED Dot-Matrix", size: 10))
+                            .foregroundColor(.black.opacity(0.5))
+                            .padding(.top, 4)
+                    }
+                    .padding(.trailing, 40)
+                    .offset(y: -15)
                 }
 
                 // Playback Controls
@@ -1043,16 +1154,16 @@ class LoopingVideoPlayerUIView: UIView {
     init(videoName: String) {
         super.init(frame: .zero)
         let bundle: Bundle = {
-            #if SWIFT_PACKAGE
+#if SWIFT_PACKAGE
             return Bundle.module
-            #else
+#else
             return Bundle.main
-            #endif
+#endif
         }()
         guard let fileURL = bundle.url(forResource: videoName, withExtension: "mov") ??
-                             bundle.url(forResource: videoName, withExtension: "mov", subdirectory: "Resources") ??
-                             bundle.url(forResource: videoName, withExtension: "mp4") ??
-                             bundle.url(forResource: videoName, withExtension: "mp4", subdirectory: "Resources") else {
+                bundle.url(forResource: videoName, withExtension: "mov", subdirectory: "Resources") ??
+                bundle.url(forResource: videoName, withExtension: "mp4") ??
+                bundle.url(forResource: videoName, withExtension: "mp4", subdirectory: "Resources") else {
             return
         }
         let asset = AVAsset(url: fileURL)
@@ -1121,6 +1232,15 @@ struct PlainNoAnimationButtonStyle: ButtonStyle {
         configuration.label
             .opacity(configuration.isPressed ? 0.7 : 1.0)
             .animation(nil, value: configuration.isPressed)
+    }
+}
+
+struct RubberButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.92 : 1.0) // Squish effect
+            .opacity(configuration.isPressed ? 0.9 : 1.0) // Slight compression darkening
+            .animation(.interactiveSpring(response: 0.2, dampingFraction: 0.5), value: configuration.isPressed)
     }
 }
 

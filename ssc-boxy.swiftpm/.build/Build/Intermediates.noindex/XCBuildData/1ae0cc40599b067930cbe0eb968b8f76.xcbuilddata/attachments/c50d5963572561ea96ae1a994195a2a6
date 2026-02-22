@@ -1,0 +1,49 @@
+{
+  "" : {
+    "diagnostics" : "/Users/destucr/Desktop/ssc/ssc-boxy.swiftpm/.build/Build/Intermediates.noindex/SSC-Boxy.build/Debug-iphonesimulator/SSC-Boxy.build/Objects-normal/arm64/SSC-Boxy-primary.dia",
+    "emit-module-dependencies" : "/Users/destucr/Desktop/ssc/ssc-boxy.swiftpm/.build/Build/Intermediates.noindex/SSC-Boxy.build/Debug-iphonesimulator/SSC-Boxy.build/Objects-normal/arm64/SSC-Boxy-primary-emit-module.d",
+    "emit-module-diagnostics" : "/Users/destucr/Desktop/ssc/ssc-boxy.swiftpm/.build/Build/Intermediates.noindex/SSC-Boxy.build/Debug-iphonesimulator/SSC-Boxy.build/Objects-normal/arm64/SSC-Boxy-primary-emit-module.dia",
+    "pch" : "/Users/destucr/Desktop/ssc/ssc-boxy.swiftpm/.build/Build/Intermediates.noindex/SSC-Boxy.build/Debug-iphonesimulator/SSC-Boxy.build/Objects-normal/arm64/SSC-Boxy-primary-Bridging-header.pch",
+    "swift-dependencies" : "/Users/destucr/Desktop/ssc/ssc-boxy.swiftpm/.build/Build/Intermediates.noindex/SSC-Boxy.build/Debug-iphonesimulator/SSC-Boxy.build/Objects-normal/arm64/SSC-Boxy-primary.swiftdeps"
+  },
+  "/Users/destucr/Desktop/ssc/ssc-boxy.swiftpm/.build/Build/Intermediates.noindex/SSC-Boxy.build/Debug-iphonesimulator/SSC-Boxy.build/DerivedSources/GeneratedAssetSymbols.swift" : {
+    "const-values" : "/Users/destucr/Desktop/ssc/ssc-boxy.swiftpm/.build/Build/Intermediates.noindex/SSC-Boxy.build/Debug-iphonesimulator/SSC-Boxy.build/Objects-normal/arm64/GeneratedAssetSymbols.swiftconstvalues",
+    "dependencies" : "/Users/destucr/Desktop/ssc/ssc-boxy.swiftpm/.build/Build/Intermediates.noindex/SSC-Boxy.build/Debug-iphonesimulator/SSC-Boxy.build/Objects-normal/arm64/GeneratedAssetSymbols.d",
+    "diagnostics" : "/Users/destucr/Desktop/ssc/ssc-boxy.swiftpm/.build/Build/Intermediates.noindex/SSC-Boxy.build/Debug-iphonesimulator/SSC-Boxy.build/Objects-normal/arm64/GeneratedAssetSymbols.dia",
+    "index-unit-output-path" : "/SSC-Boxy.build/Debug-iphonesimulator/SSC-Boxy.build/Objects-normal/arm64/GeneratedAssetSymbols.o",
+    "llvm-bc" : "/Users/destucr/Desktop/ssc/ssc-boxy.swiftpm/.build/Build/Intermediates.noindex/SSC-Boxy.build/Debug-iphonesimulator/SSC-Boxy.build/Objects-normal/arm64/GeneratedAssetSymbols.bc",
+    "object" : "/Users/destucr/Desktop/ssc/ssc-boxy.swiftpm/.build/Build/Intermediates.noindex/SSC-Boxy.build/Debug-iphonesimulator/SSC-Boxy.build/Objects-normal/arm64/GeneratedAssetSymbols.o",
+    "swift-dependencies" : "/Users/destucr/Desktop/ssc/ssc-boxy.swiftpm/.build/Build/Intermediates.noindex/SSC-Boxy.build/Debug-iphonesimulator/SSC-Boxy.build/Objects-normal/arm64/GeneratedAssetSymbols.swiftdeps",
+    "swiftmodule" : "/Users/destucr/Desktop/ssc/ssc-boxy.swiftpm/.build/Build/Intermediates.noindex/SSC-Boxy.build/Debug-iphonesimulator/SSC-Boxy.build/Objects-normal/arm64/GeneratedAssetSymbols~partial.swiftmodule"
+  },
+  "/Users/destucr/Desktop/ssc/ssc-boxy.swiftpm/.build/Build/Intermediates.noindex/SSC-Boxy.build/Debug-iphonesimulator/SSC-Boxy.build/DerivedSources/resource_bundle_accessor.swift" : {
+    "const-values" : "/Users/destucr/Desktop/ssc/ssc-boxy.swiftpm/.build/Build/Intermediates.noindex/SSC-Boxy.build/Debug-iphonesimulator/SSC-Boxy.build/Objects-normal/arm64/resource_bundle_accessor.swiftconstvalues",
+    "dependencies" : "/Users/destucr/Desktop/ssc/ssc-boxy.swiftpm/.build/Build/Intermediates.noindex/SSC-Boxy.build/Debug-iphonesimulator/SSC-Boxy.build/Objects-normal/arm64/resource_bundle_accessor.d",
+    "diagnostics" : "/Users/destucr/Desktop/ssc/ssc-boxy.swiftpm/.build/Build/Intermediates.noindex/SSC-Boxy.build/Debug-iphonesimulator/SSC-Boxy.build/Objects-normal/arm64/resource_bundle_accessor.dia",
+    "index-unit-output-path" : "/SSC-Boxy.build/Debug-iphonesimulator/SSC-Boxy.build/Objects-normal/arm64/resource_bundle_accessor.o",
+    "llvm-bc" : "/Users/destucr/Desktop/ssc/ssc-boxy.swiftpm/.build/Build/Intermediates.noindex/SSC-Boxy.build/Debug-iphonesimulator/SSC-Boxy.build/Objects-normal/arm64/resource_bundle_accessor.bc",
+    "object" : "/Users/destucr/Desktop/ssc/ssc-boxy.swiftpm/.build/Build/Intermediates.noindex/SSC-Boxy.build/Debug-iphonesimulator/SSC-Boxy.build/Objects-normal/arm64/resource_bundle_accessor.o",
+    "swift-dependencies" : "/Users/destucr/Desktop/ssc/ssc-boxy.swiftpm/.build/Build/Intermediates.noindex/SSC-Boxy.build/Debug-iphonesimulator/SSC-Boxy.build/Objects-normal/arm64/resource_bundle_accessor.swiftdeps",
+    "swiftmodule" : "/Users/destucr/Desktop/ssc/ssc-boxy.swiftpm/.build/Build/Intermediates.noindex/SSC-Boxy.build/Debug-iphonesimulator/SSC-Boxy.build/Objects-normal/arm64/resource_bundle_accessor~partial.swiftmodule"
+  },
+  "/Users/destucr/Desktop/ssc/ssc-boxy.swiftpm/ContentView.swift" : {
+    "const-values" : "/Users/destucr/Desktop/ssc/ssc-boxy.swiftpm/.build/Build/Intermediates.noindex/SSC-Boxy.build/Debug-iphonesimulator/SSC-Boxy.build/Objects-normal/arm64/ContentView.swiftconstvalues",
+    "dependencies" : "/Users/destucr/Desktop/ssc/ssc-boxy.swiftpm/.build/Build/Intermediates.noindex/SSC-Boxy.build/Debug-iphonesimulator/SSC-Boxy.build/Objects-normal/arm64/ContentView.d",
+    "diagnostics" : "/Users/destucr/Desktop/ssc/ssc-boxy.swiftpm/.build/Build/Intermediates.noindex/SSC-Boxy.build/Debug-iphonesimulator/SSC-Boxy.build/Objects-normal/arm64/ContentView.dia",
+    "index-unit-output-path" : "/SSC-Boxy.build/Debug-iphonesimulator/SSC-Boxy.build/Objects-normal/arm64/ContentView.o",
+    "llvm-bc" : "/Users/destucr/Desktop/ssc/ssc-boxy.swiftpm/.build/Build/Intermediates.noindex/SSC-Boxy.build/Debug-iphonesimulator/SSC-Boxy.build/Objects-normal/arm64/ContentView.bc",
+    "object" : "/Users/destucr/Desktop/ssc/ssc-boxy.swiftpm/.build/Build/Intermediates.noindex/SSC-Boxy.build/Debug-iphonesimulator/SSC-Boxy.build/Objects-normal/arm64/ContentView.o",
+    "swift-dependencies" : "/Users/destucr/Desktop/ssc/ssc-boxy.swiftpm/.build/Build/Intermediates.noindex/SSC-Boxy.build/Debug-iphonesimulator/SSC-Boxy.build/Objects-normal/arm64/ContentView.swiftdeps",
+    "swiftmodule" : "/Users/destucr/Desktop/ssc/ssc-boxy.swiftpm/.build/Build/Intermediates.noindex/SSC-Boxy.build/Debug-iphonesimulator/SSC-Boxy.build/Objects-normal/arm64/ContentView~partial.swiftmodule"
+  },
+  "/Users/destucr/Desktop/ssc/ssc-boxy.swiftpm/MyApp.swift" : {
+    "const-values" : "/Users/destucr/Desktop/ssc/ssc-boxy.swiftpm/.build/Build/Intermediates.noindex/SSC-Boxy.build/Debug-iphonesimulator/SSC-Boxy.build/Objects-normal/arm64/MyApp.swiftconstvalues",
+    "dependencies" : "/Users/destucr/Desktop/ssc/ssc-boxy.swiftpm/.build/Build/Intermediates.noindex/SSC-Boxy.build/Debug-iphonesimulator/SSC-Boxy.build/Objects-normal/arm64/MyApp.d",
+    "diagnostics" : "/Users/destucr/Desktop/ssc/ssc-boxy.swiftpm/.build/Build/Intermediates.noindex/SSC-Boxy.build/Debug-iphonesimulator/SSC-Boxy.build/Objects-normal/arm64/MyApp.dia",
+    "index-unit-output-path" : "/SSC-Boxy.build/Debug-iphonesimulator/SSC-Boxy.build/Objects-normal/arm64/MyApp.o",
+    "llvm-bc" : "/Users/destucr/Desktop/ssc/ssc-boxy.swiftpm/.build/Build/Intermediates.noindex/SSC-Boxy.build/Debug-iphonesimulator/SSC-Boxy.build/Objects-normal/arm64/MyApp.bc",
+    "object" : "/Users/destucr/Desktop/ssc/ssc-boxy.swiftpm/.build/Build/Intermediates.noindex/SSC-Boxy.build/Debug-iphonesimulator/SSC-Boxy.build/Objects-normal/arm64/MyApp.o",
+    "swift-dependencies" : "/Users/destucr/Desktop/ssc/ssc-boxy.swiftpm/.build/Build/Intermediates.noindex/SSC-Boxy.build/Debug-iphonesimulator/SSC-Boxy.build/Objects-normal/arm64/MyApp.swiftdeps",
+    "swiftmodule" : "/Users/destucr/Desktop/ssc/ssc-boxy.swiftpm/.build/Build/Intermediates.noindex/SSC-Boxy.build/Debug-iphonesimulator/SSC-Boxy.build/Objects-normal/arm64/MyApp~partial.swiftmodule"
+  }
+}

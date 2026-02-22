@@ -389,9 +389,11 @@ public class RadioAudioManager: NSObject, ObservableObject {
         }
         lastTrackChangeTime = now
 
+        let safeIndex = max(0, min(availableTracks.count - 1, index))
+        let trackToPlay = availableTracks[safeIndex]
+
         audioQueue.async { [weak self] in
             guard let self else { return }
-            let safeIndex = max(0, min(self.availableTracks.count - 1, index))
 
             Task { @MainActor in
                 self.selectedTrackIndex = safeIndex
@@ -399,28 +401,37 @@ public class RadioAudioManager: NSObject, ObservableObject {
 
             if autoPlay {
                 self.stopPlaybackInternal()
-                self.playTestAudioInternal()
+                self.playAudioInternal(atTrack: trackToPlay)
             }
         }
     }
 
     public func playTestAudio() {
+        let trackToPlay = selectedTrack
         audioQueue.async { [weak self] in
-            self?.playTestAudioInternal()
+            self?.playTestAudioInternal(track: trackToPlay)
         }
     }
 
-    private func playTestAudioInternal() {
+    private func playTestAudioInternal(track: AudioTrack) {
         if isPaused {
             resumePlaybackInternal()
             return
         }
 
-        guard let url = getTestAudioURL() else {
-            print("❌ Test audio file not found")
+        guard let url = getAudioURL(for: track) else {
+            print("❌ Audio file not found for: \(track.title)")
             return
         }
 
+        playAudioInternal(at: url)
+    }
+
+    private func playAudioInternal(atTrack track: AudioTrack) {
+        guard let url = getAudioURL(for: track) else {
+            print("❌ Audio file not found for: \(track.title)")
+            return
+        }
         playAudioInternal(at: url)
     }
 
@@ -483,7 +494,7 @@ public class RadioAudioManager: NSObject, ObservableObject {
         }
     }
 
-    private func getTestAudioURL() -> URL? {
+    private func getAudioURL(for track: AudioTrack) -> URL? {
         let bundle: Bundle = {
             #if SWIFT_PACKAGE
             return Bundle.module
@@ -492,7 +503,7 @@ public class RadioAudioManager: NSObject, ObservableObject {
             #endif
         }()
 
-        let filename = selectedTrack.filename
+        let filename = track.filename
         return bundle.url(forResource: filename, withExtension: "mp3") ??
         bundle.url(forResource: filename, withExtension: "mp3", subdirectory: "Resources") ??
         bundle.url(forResource: filename, withExtension: "mp3", subdirectory: "Sounds")
@@ -640,6 +651,8 @@ public struct ContentView: View {
 
     @State private var showVolumeDisplay = false
     @State private var volumeTimer: Timer?
+    @State private var showNowPlayingOverlay = false
+    @State private var nowPlayingTimer: Timer?
 
     let volumeSteps = 32
 
@@ -701,6 +714,26 @@ public struct ContentView: View {
                             }
                             .padding(.top, 10)
                             .frame(maxWidth: 200, maxHeight: 45)
+                        } else if showNowPlayingOverlay && (audioManager.isPlaying || audioManager.isPaused || isPlayToggled) {
+                            VStack(spacing: 8) {
+                                Text("NOW PLAYING")
+                                    .font(.custom("LED Dot-Matrix", size: 10))
+                                    .opacity(0.6)
+                                
+                                Text(audioManager.selectedTrack.title.uppercased())
+                                    .font(.custom("LED Dot-Matrix", size: 14))
+                                    .multilineTextAlignment(.center)
+                                    .padding(.horizontal, 10)
+                                    .lineLimit(2)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                
+                                if let artist = audioManager.selectedTrack.artist {
+                                    Text(artist.uppercased())
+                                        .font(.custom("LED Dot-Matrix", size: 10))
+                                        .opacity(0.8)
+                                }
+                            }
+                            .frame(width: 240)
                         } else if audioManager.isPlaying {
                             PlayingVisualizerView()
                                 .offset(y: -5)
@@ -713,6 +746,9 @@ public struct ContentView: View {
                                         transaction.disablesAnimations = true
                                         withTransaction(transaction) {
                                             if let idx = audioManager.availableTracks.firstIndex(of: track) {
+                                                if audioManager.isPlaying {
+                                                    showNowPlaying()
+                                                }
                                                 audioManager.playTrack(at: idx)
                                             }
                                         }
@@ -835,6 +871,9 @@ public struct ContentView: View {
                     controlButton(icon: "ic_replay", isActive: false, altIcon: nil) {
                         audioManager.triggerHaptic(.light)
                         audioManager.playSound("button-click")
+                        if audioManager.isPlaying || isPlayToggled {
+                            showNowPlaying()
+                        }
                         audioManager.stopPlayback()
                         audioManager.playTestAudio()
                     }
@@ -846,6 +885,9 @@ public struct ContentView: View {
                         var transaction = Transaction()
                         transaction.disablesAnimations = true
                         withTransaction(transaction) {
+                            if audioManager.isPlaying || isPlayToggled {
+                                showNowPlaying()
+                            }
                             let prevIndex = (audioManager.selectedTrackIndex - 1 + audioManager.availableTracks.count) % audioManager.availableTracks.count
                             audioManager.playTrack(at: prevIndex, autoPlay: audioManager.isPlaying)
                         }
@@ -868,6 +910,7 @@ public struct ContentView: View {
                                 isPlayToggled = false
                             } else {
                                 audioManager.playSound("button-release")
+                                showNowPlaying()
                                 audioManager.playTestAudio()
                                 isPlayToggled = true
                             }
@@ -881,6 +924,9 @@ public struct ContentView: View {
                         var transaction = Transaction()
                         transaction.disablesAnimations = true
                         withTransaction(transaction) {
+                            if audioManager.isPlaying || isPlayToggled {
+                                showNowPlaying()
+                            }
                             let nextIndex = (audioManager.selectedTrackIndex + 1) % audioManager.availableTracks.count
                             audioManager.playTrack(at: nextIndex, autoPlay: audioManager.isPlaying)
                         }
@@ -958,15 +1004,26 @@ public struct ContentView: View {
             }
         }
     }
+
+    private func showNowPlaying() {
+        showNowPlayingOverlay = true
+        nowPlayingTimer?.invalidate()
+        nowPlayingTimer = Timer.scheduledTimer(withTimeInterval: 1.2, repeats: false) { _ in
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                showNowPlayingOverlay = false
+            }
+        }
+    }
 }
 
 struct PlayingVisualizerView: View {
     var body: some View {
         LoopingVideoPlayer(videoName: "playing-visualizer-3")
-            .frame(width: 350, height: 80)
+            .frame(width: 280, height: 80)
             .clipShape(.rect)
             .cornerRadius(10)
-            .scaledToFit()
             .grayscale(1.0)
     }
 }

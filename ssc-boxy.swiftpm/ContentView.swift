@@ -769,6 +769,7 @@ public struct ContentView: View {
                                 VStack(alignment: .leading, spacing: 4) {
                                     ForEach(visibleTracks) { track in
                                         Button(action: {
+                                            guard isScreenOn else { return }
                                             var transaction = Transaction()
                                             transaction.disablesAnimations = true
                                             withTransaction(transaction) {
@@ -856,6 +857,7 @@ public struct ContentView: View {
                                     .gesture(
                                         DragGesture()
                                             .onChanged { value in
+                                                guard isScreenOn else { return }
                                                 let center = CGPoint(x: 58, y: 58)
                                                 let currentVector = CGVector(dx: value.location.x - center.x, dy: value.location.y - center.y)
                                                 let currentAngle = atan2(currentVector.dy, currentVector.dx)
@@ -980,6 +982,7 @@ public struct ContentView: View {
                 // Playback Controls
                 HStack(spacing: 5) {
                     controlButton(icon: "ic_replay", isActive: false, altIcon: nil) {
+                        guard isScreenOn else { return }
                         audioManager.triggerHaptic(.light)
                         audioManager.playSound("button-click")
                         if audioManager.isPlaying || isPlayToggled {
@@ -991,6 +994,7 @@ public struct ContentView: View {
                     .drawingGroup()
 
                     controlButton(icon: "ic_previous", isActive: false, altIcon: nil) {
+                        guard isScreenOn else { return }
                         audioManager.triggerHaptic(.light)
                         audioManager.playSound("button-click")
                         var transaction = Transaction()
@@ -1011,6 +1015,7 @@ public struct ContentView: View {
                         isActive: isPlayToggled,
                         altIcon: isPlayToggled ? "ic_play" : "ic_pause"
                     ) {
+                        guard isScreenOn else { return }
                         var transaction = Transaction()
                         transaction.disablesAnimations = true
                         withTransaction(transaction) {
@@ -1030,6 +1035,7 @@ public struct ContentView: View {
                     .drawingGroup()
 
                     controlButton(icon: "ic_next", isActive: false, altIcon: nil) {
+                        guard isScreenOn else { return }
                         audioManager.triggerHaptic(.light)
                         audioManager.playSound("button-click")
                         var transaction = Transaction()
@@ -1045,6 +1051,7 @@ public struct ContentView: View {
                     .drawingGroup()
 
                     controlButton(icon: "ic_stop", isActive: false, altIcon: nil) {
+                        guard isScreenOn else { return }
                         audioManager.triggerHaptic(.light)
                         audioManager.playSound("button-click")
                         audioManager.stopPlayback()

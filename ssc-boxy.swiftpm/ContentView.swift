@@ -59,7 +59,7 @@ public class RadioAudioManager: NSObject, ObservableObject {
 
     @Published var isMonitoring = false
     @Published var isAutoEchoEnabled = false
-    @Published var currentFilter: RadioFilter = .amRadio
+    @Published var currentFilter: RadioFilter = .hamRadio
     @Published var volume: Double = 0.5 {
         didSet {
             mixerNode.outputVolume = Float(volume)
@@ -69,9 +69,14 @@ public class RadioAudioManager: NSObject, ObservableObject {
     @Published var availableTracks: [AudioTrack] = [
         AudioTrack(title: "Beethoven - Coriolan Overture", filename: "Classicals.de - Beethoven - Coriolan Overture - Op.62", artist: "Beethoven"),
         AudioTrack(title: "Brahms - Fantasia, Op. 116 No. 2", filename: "Classicals.de - Brahms - Fantasia, Opus 116 - No. 2 - Arranged for Strings", artist: "Brahms"),
+        AudioTrack(title: "Chopin - Nocturne Op. 9 no. 2", filename: "Classicals.de - Chopin - Nocturne Op. 9 no. 2 in E-flat major", artist: "Chopin"),
+        AudioTrack(title: "Mozart - Marriage of Figaro", filename: "Classicals.de - Mozart - Marriage of Figaro", artist: "Mozart"),
+        AudioTrack(title: "Mozart - Sonata No. 8 D major", filename: "Classicals.de - Mozart - Sonata No. 8 D major - 1. Movement - KV 311", artist: "Mozart"),
         AudioTrack(title: "Mozart - Symphony in F major", filename: "Classicals.de - Mozart - Symphony in F major, K.Anh.223:19a - III", artist: "Mozart"),
+        AudioTrack(title: "Paganini - La Campanella", filename: "Classicals.de - Paganini - Violin Concerto No. 2, Op. 7 (La Campanella) - 3. Movement", artist: "Paganini"),
+        AudioTrack(title: "Vivaldi - Concerto for 2 Violins", filename: "Classicals.de - Vivaldi - Concerto for 2 Violins in A minor, RV 522 - I. Allegro (A minor)", artist: "Vivaldi"),
         AudioTrack(title: "Vivaldi - Oboe Concerto", filename: "Classicals.de - Vivaldi - Oboe Concerto in C major - 2. Larghetto - RV 447", artist: "Vivaldi"),
-        AudioTrack(title: "Vivaldi - Spring", filename: "Vivaldi - Spring", artist: "Vivaldi"),
+        AudioTrack(title: "Vivaldi - The Four Seasons", filename: "Vivaldi - The Four Seasons", artist: "Vivaldi"),
     ]
     @Published var selectedTrackIndex: Int = 0
 

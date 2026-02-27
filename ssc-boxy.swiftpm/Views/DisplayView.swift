@@ -5,7 +5,7 @@ struct DisplayView: View {
     let isScreenOn: Bool
     let isContentVisible: Bool
     @Binding var showVolumeDisplay: Bool
-    
+
     var body: some View {
         ZStack {
             Image("display_off")
@@ -78,6 +78,7 @@ struct DisplayView: View {
                         // Track List Overlay
                         VStack(alignment: .leading, spacing: 4) {
                             ForEach(visibleTracks) { track in
+                                let isSelected = audioManager.selectedTrack == track
                                 Button(action: {
                                     guard isScreenOn else { return }
                                     var transaction = Transaction()
@@ -91,16 +92,27 @@ struct DisplayView: View {
                                         }
                                     }
                                 }) {
-                                    HStack(alignment: .top, spacing: 5) {
-                                        Text(audioManager.selectedTrack == track ? ">" : "-")
+                                    HStack(alignment: .center, spacing: 5) {
+                                        Text(isSelected ? ">" : "-")
                                             .font(.custom("LED Dot-Matrix", size: 14))
-                                            .foregroundColor(audioManager.selectedTrack == track ? .black : .black.opacity(0.2))
-                                            .padding(.leading, audioManager.selectedTrack == track ? 5 : 0)
+                                            .foregroundColor(isSelected ? .black : .black.opacity(0.2))
+                                            .padding(.leading, isSelected ? 5 : 0)
 
-                                        Text(track.title.uppercased())
-                                            .font(.custom("LED Dot-Matrix", size: 14))
-                                            .foregroundColor(audioManager.selectedTrack == track ? .black : .black.opacity(0.2))
-                                            .lineLimit(1)
+                                        if isSelected {
+                                            MarqueeText(
+                                                text: track.title.uppercased(),
+                                                font: .custom("LED Dot-Matrix", size: 14),
+                                                color: .black,
+                                                delay: 0.3,
+                                                speed: 28
+                                            )
+                                            .frame(height: 18)
+                                        } else {
+                                            Text(track.title.uppercased())
+                                                .font(.custom("LED Dot-Matrix", size: 14))
+                                                .foregroundColor(.black.opacity(0.2))
+                                                .lineLimit(1)
+                                        }
                                     }
                                     .offset(y: 5)
                                 }
@@ -120,7 +132,7 @@ struct DisplayView: View {
             }
         }
     }
-    
+
     private var visibleTracks: [AudioTrack] {
         let count = audioManager.availableTracks.count
         if count == 0 { return [] }

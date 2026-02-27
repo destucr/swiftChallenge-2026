@@ -1,698 +1,8 @@
 import SwiftUI
-import Foundation
-import AVFoundation
-import AVKit
-
-public struct AudioTrack: Identifiable, Equatable {
-    public let id = UUID()
-    public let title: String
-    public let filename: String
-    public let artist: String?
-}
-
-public enum RadioFilter: String, CaseIterable {
-    case amRadio = "AM Radio"
-    case fmVintage = "FM Vintage"
-    case hamRadio = "Ham Radio"
-}
-
-@MainActor
-public class RadioAudioManager: NSObject, ObservableObject {
-    public static let shared = RadioAudioManager()
-
-    // Serial queue to ensure audio operations never overlap
-    private let audioQueue = DispatchQueue(label: "com.boxy.audio")
-
-    private let engine = AVAudioEngine()
-    private let playerNode = AVAudioPlayerNode()
-    private let mixerNode = AVAudioMixerNode()
-
-    // Effects
-    private let eqNode = AVAudioUnitEQ(numberOfBands: 3)
-    private let distortionNode = AVAudioUnitDistortion()
-    private let delayNode = AVAudioUnitDelay()
-
-    // Noise and Beeps
-    private let noisePlayerNode = AVAudioPlayerNode()
-    private var noiseBuffer: AVAudioPCMBuffer?
-    private let beepPlayerNode = AVAudioPlayerNode()
-    private var beepBuffer: AVAudioPCMBuffer?
-    private let heterodynePlayerNode = AVAudioPlayerNode()
-    private var heterodyneBuffer: AVAudioPCMBuffer?
-
-    private var uiSoundPlayer: AVAudioPlayer?
-    private var activeTickPlayers: [AVAudioPlayer] = []
-    private let maxTickPlayers = 8 // Limit concurrent tick sounds
-    private let tickLock = NSLock()
-
-    // Cached resources
-    private var cachedSoundData: [String: Data] = [:]
-    private let lightHaptic = UIImpactFeedbackGenerator(style: .light)
-    private let mediumHaptic = UIImpactFeedbackGenerator(style: .medium)
-
-    // Simple debounce for track changes
-    private var lastTrackChangeTime = Date.distantPast
-    private let minTrackChangeInterval: TimeInterval = 0.15
-
-    @Published var isPlaying = false
-    @Published var isPaused = false
-    @Published var showNowPlayingOverlay = false
-    private var nowPlayingTimer: Timer?
-    private var isManualStopping = false
-
-    @Published var isMonitoring = false
-    @Published var isAutoEchoEnabled = false
-    @Published var currentFilter: RadioFilter = .hamRadio
-    @Published var volume: Double = 0.5 {
-        didSet {
-            mixerNode.outputVolume = Float(volume)
-        }
-    }
-
-    @Published var availableTracks: [AudioTrack] = [
-        AudioTrack(title: "Beethoven - Coriolan Overture", filename: "Classicals.de - Beethoven - Coriolan Overture - Op.62", artist: "Beethoven"),
-        AudioTrack(title: "Brahms - Fantasia, Op. 116 No. 2", filename: "Classicals.de - Brahms - Fantasia, Opus 116 - No. 2 - Arranged for Strings", artist: "Brahms"),
-        AudioTrack(title: "Chopin - Nocturne Op. 9 no. 2", filename: "Classicals.de - Chopin - Nocturne Op. 9 no. 2 in E-flat major", artist: "Chopin"),
-        AudioTrack(title: "Mozart - Marriage of Figaro", filename: "Classicals.de - Mozart - Marriage of Figaro", artist: "Mozart"),
-        AudioTrack(title: "Mozart - Sonata No. 8 D major", filename: "Classicals.de - Mozart - Sonata No. 8 D major - 1. Movement - KV 311", artist: "Mozart"),
-        AudioTrack(title: "Mozart - Symphony in F major", filename: "Classicals.de - Mozart - Symphony in F major, K.Anh.223:19a - III", artist: "Mozart"),
-        AudioTrack(title: "Paganini - La Campanella", filename: "Classicals.de - Paganini - Violin Concerto No. 2, Op. 7 (La Campanella) - 3. Movement", artist: "Paganini"),
-        AudioTrack(title: "Vivaldi - Concerto for 2 Violins", filename: "Classicals.de - Vivaldi - Concerto for 2 Violins in A minor, RV 522 - I. Allegro (A minor)", artist: "Vivaldi"),
-        AudioTrack(title: "Vivaldi - Oboe Concerto", filename: "Classicals.de - Vivaldi - Oboe Concerto in C major - 2. Larghetto - RV 447", artist: "Vivaldi"),
-        AudioTrack(title: "Vivaldi - The Four Seasons", filename: "Vivaldi - The Four Seasons", artist: "Vivaldi"),
-    ]
-    @Published var selectedTrackIndex: Int = 0
-
-    public var selectedTrack: AudioTrack {
-        availableTracks[selectedTrackIndex]
-    }
-
-    override init() {
-        super.init()
-        setupEngine()
-        loadNoiseBuffer()
-        loadBeepBuffer()
-        loadHeterodyneBuffer()
-        preloadUISounds()
-
-        // Prepare haptics
-        lightHaptic.prepare()
-        mediumHaptic.prepare()
-
-        debugListBundleResources()
-    }
-
-    private func preloadUISounds() {
-        let sounds = ["button-click", "button-release", "volume-tick-1"]
-        let bundle: Bundle = {
-#if SWIFT_PACKAGE
-            return Bundle.module
-#else
-            return Bundle.main
-#endif
-        }()
-
-        for name in sounds {
-            if let url = bundle.url(forResource: name, withExtension: "mp3") ??
-                bundle.url(forResource: name, withExtension: "mp3", subdirectory: "Resources"),
-               let data = try? Data(contentsOf: url) {
-                cachedSoundData[name] = data
-            }
-        }
-    }
-
-    private func setupEngine() {
-        // Configure audio session once for playback
-        do {
-            let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.playback, mode: .default, options: [])
-            try session.setActive(true)
-        } catch {
-            print("❌ Failed to setup audio session: \(error)")
-        }
-
-        engine.attach(playerNode)
-        engine.attach(eqNode)
-        engine.attach(distortionNode)
-        engine.attach(delayNode)
-        engine.attach(noisePlayerNode)
-        engine.attach(beepPlayerNode)
-        engine.attach(heterodynePlayerNode)
-        engine.attach(mixerNode)
-
-        let format = engine.mainMixerNode.outputFormat(forBus: 0)
-
-        engine.connect(playerNode, to: eqNode, format: format)
-        engine.connect(eqNode, to: distortionNode, format: format)
-        engine.connect(distortionNode, to: delayNode, format: format)
-        engine.connect(delayNode, to: mixerNode, format: format)
-
-        engine.connect(noisePlayerNode, to: mixerNode, format: format)
-        engine.connect(beepPlayerNode, to: mixerNode, format: format)
-        engine.connect(heterodynePlayerNode, to: mixerNode, format: format)
-
-        engine.connect(mixerNode, to: engine.mainMixerNode, format: format)
-
-        prepareFilter(currentFilter)
-    }
-
-    func toggleMonitoring() {
-        if isMonitoring {
-            stopMonitoring()
-        } else {
-            startMonitoring()
-        }
-    }
-
-    func startMonitoring() {
-        stopPlayback()
-
-        do {
-            let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth])
-            try session.setActive(true, options: .notifyOthersOnDeactivation)
-
-            if engine.isRunning {
-                engine.stop()
-            }
-
-            let inputNode = engine.inputNode
-            let inputFormat = inputNode.inputFormat(forBus: 0)
-
-            engine.disconnectNodeInput(eqNode)
-            engine.disconnectNodeInput(distortionNode)
-            engine.disconnectNodeInput(delayNode)
-            engine.disconnectNodeInput(mixerNode)
-
-            engine.connect(inputNode, to: eqNode, format: inputFormat)
-            engine.connect(eqNode, to: distortionNode, format: inputFormat)
-            engine.connect(distortionNode, to: delayNode, format: inputFormat)
-            engine.connect(delayNode, to: mixerNode, format: inputFormat)
-            engine.connect(mixerNode, to: engine.mainMixerNode, format: nil)
-
-            engine.prepare()
-            try engine.start()
-            isMonitoring = true
-
-            if let buffer = noiseBuffer {
-                noisePlayerNode.volume = (currentFilter == .hamRadio) ? 0.08 : 0.03
-                noisePlayerNode.scheduleBuffer(buffer, at: nil, options: .loops, completionHandler: nil)
-                noisePlayerNode.play()
-
-                if currentFilter == .hamRadio {
-                    startHeterodyne()
-                }
-            }
-        } catch {
-            print("Could not start engine for monitoring: \(error)")
-        }
-    }
-
-    func stopMonitoring() {
-        audioQueue.async { [weak self] in
-            guard let self else { return }
-            self.engine.stop()
-
-            self.engine.disconnectNodeInput(self.eqNode)
-            self.engine.disconnectNodeInput(self.distortionNode)
-            self.engine.disconnectNodeInput(self.delayNode)
-            self.engine.disconnectNodeInput(self.mixerNode)
-
-            let outputFormat = self.engine.mainMixerNode.outputFormat(forBus: 0)
-
-            self.engine.connect(self.playerNode, to: self.eqNode, format: outputFormat)
-            self.engine.connect(self.eqNode, to: self.distortionNode, format: outputFormat)
-            self.engine.connect(self.distortionNode, to: self.delayNode, format: outputFormat)
-            self.engine.connect(self.delayNode, to: self.mixerNode, format: outputFormat)
-            self.engine.connect(self.mixerNode, to: self.engine.mainMixerNode, format: outputFormat)
-
-            self.noisePlayerNode.stop()
-            self.stopHeterodyne()
-
-            Task { @MainActor in
-                self.isMonitoring = false
-            }
-        }
-    }
-
-    private func loadNoiseBuffer() {
-        let format = engine.mainMixerNode.outputFormat(forBus: 0)
-        let frameCount = AVAudioFrameCount(format.sampleRate * 5.0)
-        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else { return }
-
-        buffer.frameLength = frameCount
-        let channelCount = Int(buffer.format.channelCount)
-
-        for channel in 0..<channelCount {
-            if let data = buffer.floatChannelData?[channel] {
-                for i in 0..<Int(frameCount) {
-                    let whiteNoise = Float.random(in: -1.0...1.0) * 0.4
-                    let rumble = sin(Float(i) * 0.01) * 0.1
-                    data[i] = whiteNoise + rumble
-                }
-            }
-        }
-        self.noiseBuffer = buffer
-    }
-
-    private func loadBeepBuffer() {
-        let format = engine.mainMixerNode.outputFormat(forBus: 0)
-        let duration: Double = 0.2
-        let frameCount = AVAudioFrameCount(format.sampleRate * duration)
-        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else { return }
-
-        buffer.frameLength = frameCount
-        let channelCount = Int(buffer.format.channelCount)
-        let frequency: Float = 1200.0
-        let k: Float = 10.0 // Decay constant
-
-        for channel in 0..<channelCount {
-            if let data = buffer.floatChannelData?[channel] {
-                for i in 0..<Int(frameCount) {
-                    let t = Float(i) / Float(format.sampleRate)
-                    let envelope = exp(-k * t)
-                    data[i] = envelope * sin(2.0 * .pi * frequency * t) * 0.4
-                }
-            }
-        }
-        self.beepBuffer = buffer
-    }
-
-    private func loadHeterodyneBuffer() {
-        let format = engine.mainMixerNode.outputFormat(forBus: 0)
-        let duration: Double = 5.0
-        let frameCount = AVAudioFrameCount(format.sampleRate * duration)
-        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else { return }
-
-        buffer.frameLength = frameCount
-        let channelCount = Int(buffer.format.channelCount)
-
-        for channel in 0..<channelCount {
-            if let data = buffer.floatChannelData?[channel] {
-                var phase: Float = 0
-                for i in 0..<Int(frameCount) {
-                    let t = Float(i) / Float(format.sampleRate)
-                    let baseFreq: Float = 1000.0
-                    let driftFreq = baseFreq + sin(2.0 * .pi * 0.2 * t) * 200.0
-                    phase += 2.0 * .pi * driftFreq / Float(format.sampleRate)
-                    data[i] = sin(phase) * 0.05
-                }
-            }
-        }
-        self.heterodyneBuffer = buffer
-    }
-
-    private func playRogerBeep() {
-        guard let buffer = beepBuffer else { return }
-        beepPlayerNode.scheduleBuffer(buffer, at: nil, options: [], completionHandler: nil)
-        beepPlayerNode.play()
-    }
-
-    private func playSquelchStart() {
-        guard let buffer = noiseBuffer else { return }
-        noisePlayerNode.volume = 0.4
-        noisePlayerNode.scheduleBuffer(buffer, at: nil, options: .interrupts, completionHandler: nil)
-        noisePlayerNode.play()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
-            self.noisePlayerNode.volume = 0.04
-        }
-    }
-
-    private func playSquelchEnd() {
-        noisePlayerNode.volume = 0.5
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-            self.noisePlayerNode.volume = 0.0
-            self.noisePlayerNode.stop()
-        }
-    }
-
-    public func setFilter(_ filter: RadioFilter) {
-        currentFilter = filter
-        prepareFilter(filter)
-        if isMonitoring {
-            if filter == .hamRadio {
-                startHeterodyne()
-            } else {
-                stopHeterodyne()
-            }
-        }
-    }
-
-    private func startHeterodyne() {
-        guard let buffer = heterodyneBuffer else { return }
-        heterodynePlayerNode.volume = 0.1
-        heterodynePlayerNode.scheduleBuffer(buffer, at: nil, options: .loops, completionHandler: nil)
-        heterodynePlayerNode.play()
-    }
-
-    private func stopHeterodyne() {
-        heterodynePlayerNode.stop()
-    }
-
-    private func prepareFilter(_ filter: RadioFilter) {
-        distortionNode.bypass = true
-        delayNode.bypass = true
-        for i in 0..<3 { eqNode.bands[i].bypass = true }
-
-        switch filter {
-        case .amRadio:
-            eqNode.bands[0].filterType = .highPass
-            eqNode.bands[0].frequency = 300
-            eqNode.bands[0].bypass = false
-            eqNode.bands[1].filterType = .lowPass
-            eqNode.bands[1].frequency = 3000
-            eqNode.bands[1].bypass = false
-            distortionNode.loadFactoryPreset(.multiBrokenSpeaker)
-            distortionNode.preGain = -5
-            distortionNode.wetDryMix = 20
-            distortionNode.bypass = false
-        case .fmVintage:
-            eqNode.bands[0].filterType = .parametric
-            eqNode.bands[0].frequency = 500
-            eqNode.bands[0].gain = 6
-            eqNode.bands[0].bypass = false
-            distortionNode.loadFactoryPreset(.multiDistortedSquared)
-            distortionNode.wetDryMix = 15
-            distortionNode.bypass = false
-        case .hamRadio:
-            eqNode.bands[0].filterType = .highPass
-            eqNode.bands[0].frequency = 500
-            eqNode.bands[0].bypass = false
-            eqNode.bands[1].filterType = .lowPass
-            eqNode.bands[1].frequency = 2200
-            eqNode.bands[1].bypass = false
-            delayNode.delayTime = 0.02
-            delayNode.feedback = 40
-            delayNode.wetDryMix = 30
-            delayNode.bypass = false
-        }
-    }
-
-    // MARK: - Public playback API (debounced & queued)
-
-    public func playTrack(at index: Int, autoPlay: Bool = true) {
-        let now = Date()
-        guard now.timeIntervalSince(lastTrackChangeTime) >= minTrackChangeInterval else {
-            return
-        }
-        lastTrackChangeTime = now
-
-        let safeIndex = max(0, min(availableTracks.count - 1, index))
-        let trackToPlay = availableTracks[safeIndex]
-
-        audioQueue.async { [weak self] in
-            guard let self else { return }
-
-            Task { @MainActor in
-                self.selectedTrackIndex = safeIndex
-            }
-
-            if autoPlay {
-                self.stopPlaybackInternal()
-                self.playAudioInternal(atTrack: trackToPlay)
-            }
-        }
-    }
-
-    public func playNextTrack() {
-        let nextIndex = (selectedTrackIndex + 1) % availableTracks.count
-        playTrack(at: nextIndex, autoPlay: isPlaying)
-        if isPlaying {
-            showNowPlaying()
-        }
-    }
-
-    public func playPreviousTrack() {
-        let prevIndex = (selectedTrackIndex - 1 + availableTracks.count) % availableTracks.count
-        playTrack(at: prevIndex, autoPlay: isPlaying)
-        if isPlaying {
-            showNowPlaying()
-        }
-    }
-
-    public func showNowPlaying() {
-        Task { @MainActor in
-            self.showNowPlayingOverlay = true
-            self.nowPlayingTimer?.invalidate()
-            self.nowPlayingTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: false) { [weak self] _ in
-                self?.showNowPlayingOverlay = false
-            }
-        }
-    }
-
-    public func playTestAudio() {
-        let trackToPlay = selectedTrack
-        audioQueue.async { [weak self] in
-            self?.playTestAudioInternal(track: trackToPlay)
-        }
-    }
-
-    private func playTestAudioInternal(track: AudioTrack) {
-        if isPaused {
-            resumePlaybackInternal()
-            return
-        }
-
-        guard let url = getAudioURL(for: track) else {
-            print("❌ Audio file not found for: \(track.title)")
-            return
-        }
-
-        playAudioInternal(at: url)
-    }
-
-    private func playAudioInternal(atTrack track: AudioTrack) {
-        guard let url = getAudioURL(for: track) else {
-            print("❌ Audio file not found for: \(track.title)")
-            return
-        }
-        playAudioInternal(at: url)
-    }
-
-    private func playAudioInternal(at url: URL) {
-        do {
-            let session = AVAudioSession.sharedInstance()
-            if session.category != .playback {
-                try session.setCategory(.playback, mode: .default, options: [])
-            }
-            try session.setActive(true)
-
-            if isMonitoring {
-                stopMonitoringInternal()
-            }
-
-            let file = try AVAudioFile(forReading: url)
-            if !engine.isRunning {
-                try engine.start()
-            }
-
-            playerNode.stop()
-            playerNode.reset()
-            playerNode.scheduleFile(file, at: nil) { [weak self] in
-                Task { @MainActor in
-                    guard let self = self else { return }
-                    if self.isPlaying && !self.isManualStopping {
-                        self.playNextTrack()
-                    } else {
-                        self.isPlaying = false
-                        self.isManualStopping = false
-                    }
-                }
-            }
-            playerNode.play()
-
-            Task { @MainActor in
-                self.isPlaying = true
-                self.isPaused = false
-            }
-
-            print("▶️ Playing: \(url.lastPathComponent)")
-        } catch {
-            print("Error playing audio: \(error)")
-        }
-    }
-
-    private func stopMonitoringInternal() {
-        engine.stop()
-        engine.disconnectNodeInput(eqNode)
-        engine.disconnectNodeInput(distortionNode)
-        engine.disconnectNodeInput(delayNode)
-        engine.disconnectNodeInput(mixerNode)
-
-        let outputFormat = engine.mainMixerNode.outputFormat(forBus: 0)
-        engine.connect(playerNode, to: eqNode, format: outputFormat)
-        engine.connect(eqNode, to: distortionNode, format: outputFormat)
-        engine.connect(distortionNode, to: delayNode, format: outputFormat)
-        engine.connect(delayNode, to: mixerNode, format: outputFormat)
-        engine.connect(mixerNode, to: engine.mainMixerNode, format: outputFormat)
-
-        noisePlayerNode.stop()
-        stopHeterodyne()
-
-        Task { @MainActor in
-            self.isMonitoring = false
-        }
-    }
-
-    private func getAudioURL(for track: AudioTrack) -> URL? {
-        let bundle: Bundle = {
-#if SWIFT_PACKAGE
-            return Bundle.module
-#else
-            return Bundle.main
-#endif
-        }()
-
-        let filename = track.filename
-        return bundle.url(forResource: filename, withExtension: "mp3") ??
-        bundle.url(forResource: filename, withExtension: "mp3", subdirectory: "Resources") ??
-        bundle.url(forResource: filename, withExtension: "mp3", subdirectory: "Sounds")
-    }
-
-    private func debugListBundleResources() {
-        let bundle: Bundle = {
-#if SWIFT_PACKAGE
-            return Bundle.module
-#else
-            return Bundle.main
-#endif
-        }()
-
-        print("📦 Bundle URL:", bundle.bundleURL)
-
-        if let resourcesURL = bundle.resourceURL,
-           let files = try? FileManager.default.contentsOfDirectory(
-            at: resourcesURL,
-            includingPropertiesForKeys: nil
-           ) {
-            print("📂 Resources folder contents:")
-            for url in files {
-                print(" -", url.lastPathComponent)
-            }
-        } else {
-            print("⚠️ Could not list bundle resources")
-        }
-    }
-
-    public func pausePlayback() {
-        audioQueue.async { [weak self] in
-            guard let self else { return }
-            if self.isPlaying {
-                self.isManualStopping = true
-                self.playerNode.pause()
-                self.noisePlayerNode.pause()
-                Task { @MainActor in
-                    self.isPlaying = false
-                    self.isPaused = true
-                }
-            }
-        }
-    }
-
-    public func resumePlayback() {
-        audioQueue.async { [weak self] in
-            self?.resumePlaybackInternal()
-        }
-    }
-
-    private func resumePlaybackInternal() {
-        if isPaused {
-            playerNode.play()
-            noisePlayerNode.play()
-            Task { @MainActor in
-                self.isPlaying = true
-                self.isPaused = false
-            }
-        }
-    }
-
-    public func stopPlayback() {
-        audioQueue.async { [weak self] in
-            guard let self else { return }
-            self.isManualStopping = true
-            self.stopPlaybackInternal()
-        }
-    }
-
-    private func stopPlaybackInternal() {
-        playerNode.stop()
-        noisePlayerNode.stop()
-        Task { @MainActor in
-            self.isPlaying = false
-            self.isPaused = false
-            self.isManualStopping = false
-        }
-    }
-
-    public func playSound(_ name: String, rate: Float? = nil) {
-        let player: AVAudioPlayer? = {
-            do {
-                if let data = self.cachedSoundData[name] {
-                    return try AVAudioPlayer(data: data)
-                } else {
-                    let bundle: Bundle = {
-#if SWIFT_PACKAGE
-                        return Bundle.module
-#else
-                        return Bundle.main
-#endif
-                    }()
-                    guard let url = bundle.url(forResource: name, withExtension: "mp3") ??
-                            bundle.url(forResource: name, withExtension: "mp3", subdirectory: "Resources") else {
-                        return nil
-                    }
-                    return try AVAudioPlayer(contentsOf: url)
-                }
-            } catch {
-                print("❌ Error initializing player: \(error)")
-                return nil
-            }
-        }()
-
-        guard let player = player else { return }
-        player.prepareToPlay()
-
-        Task { @MainActor in
-            self.tickLock.lock()
-            defer { self.tickLock.unlock() }
-
-            self.activeTickPlayers.removeAll { !$0.isPlaying }
-
-            if name.contains("tick") {
-                guard self.activeTickPlayers.count < self.maxTickPlayers else { return }
-                player.volume = 0.1
-                player.enableRate = true
-                player.rate = rate ?? 1.0
-                self.activeTickPlayers.append(player)
-                player.play()
-            } else {
-                self.uiSoundPlayer = player
-                self.uiSoundPlayer?.play()
-            }
-        }
-    }
-
-    public func triggerHaptic(_ style: UIImpactFeedbackGenerator.FeedbackStyle = .light) {
-        switch style {
-        case .light:
-            lightHaptic.impactOccurred()
-        case .medium:
-            mediumHaptic.impactOccurred()
-        default:
-            let generator = UIImpactFeedbackGenerator(style: style)
-            generator.prepare()
-            generator.impactOccurred()
-        }
-    }
-}
 
 public struct ContentView: View {
     @StateObject private var audioManager = RadioAudioManager.shared
     @State private var isPlayToggled = false
-    @State private var startVolume: Double = 0
-    @State private var lastAngle: Double = 0
-    @State private var angleOffset: Double = 0
-
     @State private var showVolumeDisplay = false
     @State private var volumeTimer: Timer?
 
@@ -703,8 +13,6 @@ public struct ContentView: View {
     @State private var notificationTimer: Timer? = nil
     @State private var showCredits = false
 
-    let volumeSteps = 32
-
     public init() {}
 
     public var body: some View {
@@ -712,6 +20,7 @@ public struct ContentView: View {
             Color(red: 0xF7/255, green: 0xF7/255, blue: 0xF6/255)
                 .ignoresSafeArea()
 
+            // Chassis Background
             VStack {
                 Rectangle()
                     .fill(
@@ -741,410 +50,49 @@ public struct ContentView: View {
                     .frame(height: 320)
                     .padding(.top, 25)
 
-                // Display with Song List & Volume Indicator
-                ZStack {
-                    Image("display_off")
-                        .resizable()
-                        .scaledToFit()
-                        .frame(width: 350, height: 160)
-
-                    Image("display_on")
-                        .resizable()
-                        .scaledToFit()
-                        .frame(width: 350, height: 160)
-                        .opacity(isScreenOn ? 1 : 0)
-
-                    if isContentVisible {
-
-                        VStack {
-                            HStack {
-                                if showVolumeDisplay {
-                                    Text("VOLUME")
-                                        .font(.custom("LED Dot-Matrix", size: 12))
-                                } else if !audioManager.isPlaying && !audioManager.showNowPlayingOverlay {
-                                    Text("MUSIC")
-                                        .font(.custom("LED Dot-Matrix", size: 12))
-                                }
-
-                                Spacer()
-
-                                if showVolumeDisplay {
-                                    Text("\(Int(audioManager.volume * 100))%")
-                                        .font(.custom("LED Dot-Matrix", size: 12))
-                                } else if !audioManager.isPlaying && !audioManager.showNowPlayingOverlay {
-                                    Text("FM")
-                                        .font(.custom("LED Dot-Matrix", size: 12))
-                                }
-                            }
-                            .padding(.bottom, 5)
-
-                            // Content Area
-                            if showVolumeDisplay {
-                                HStack(alignment: .bottom) {
-                                    Text("MIN")
-                                        .font(Font.custom("LED Dot-Matrix", size: 10))
-
-                                    VolumeIndicatorView(volume: audioManager.volume)
-                                        .offset(y: 5)
-
-                                    Text("MAX")
-                                        .font(Font.custom("LED Dot-Matrix", size: 10))
-                                }
-                                .padding(.top, 10)
-                                .frame(maxWidth: 200, maxHeight: 45)
-                            } else if audioManager.showNowPlayingOverlay {
-                                VStack(alignment: .center, spacing: 6) {
-                                    Text("NOW PLAYING")
-                                        .font(.custom("LED Dot-Matrix", size: 12))
-                                        .opacity(0.8)
-
-                                    Text(audioManager.selectedTrack.title.uppercased())
-                                        .font(.custom("LED Dot-Matrix", size: 14))
-                                        .multilineTextAlignment(.center)
-                                        .padding(.horizontal, 10)
-                                        .lineLimit(3)
-                                        .fixedSize(horizontal: false, vertical: true)
-                                }
-                                .frame(width: 240)
-                            } else if audioManager.isPlaying {
-                                PlayingVisualizerView()
-                                    .frame(width: 260, height: 82)
-                                    .offset(y: -5)
-                            } else {
-                                // Track List Overlay
-                                VStack(alignment: .leading, spacing: 4) {
-                                    ForEach(visibleTracks) { track in
-                                        Button(action: {
-                                            guard isScreenOn else { return }
-                                            var transaction = Transaction()
-                                            transaction.disablesAnimations = true
-                                            withTransaction(transaction) {
-                                                if let idx = audioManager.availableTracks.firstIndex(of: track) {
-                                                    if audioManager.isPlaying {
-                                                        audioManager.showNowPlaying()
-                                                    }
-                                                    audioManager.playTrack(at: idx)
-                                                }
-                                            }
-                                        }) {
-                                            HStack(alignment: .top, spacing: 5) {
-                                                Text(audioManager.selectedTrack == track ? ">" : "-")
-                                                    .font(.custom("LED Dot-Matrix", size: 14))
-                                                    .foregroundColor(audioManager.selectedTrack == track ? .black : .black.opacity(0.2))
-                                                    .padding(.leading, audioManager.selectedTrack == track ? 5 : 0)
-
-                                                Text(track.title.uppercased())
-                                                    .font(.custom("LED Dot-Matrix", size: 14))
-                                                    .foregroundColor(audioManager.selectedTrack == track ? .black : .black.opacity(0.2))
-                                                    .lineLimit(1)
-                                            }
-                                            .offset(y: 5)
-                                        }
-                                        .buttonStyle(PlainNoAnimationButtonStyle())
-                                    }
-                                }
-                                .animation(nil, value: audioManager.selectedTrackIndex)
-                                .transaction { transaction in
-                                    transaction.disablesAnimations = true
-                                }
-                                .padding(.horizontal, 40)
-                                .frame(width: 300, alignment: .leading)
-                            }
-                        }
-                        .animation(nil, value: showVolumeDisplay)
-                        .animation(nil, value: audioManager.isPlaying)
-                        .animation(nil, value: audioManager.selectedTrackIndex)
-                        .frame(width: 260, height: 140)
-                        .clipped()
-                    } // end if isContentVisible
-                }
+                // Modular Display View
+                DisplayView(
+                    audioManager: audioManager,
+                    isScreenOn: isScreenOn,
+                    isContentVisible: isContentVisible,
+                    showVolumeDisplay: $showVolumeDisplay
+                )
                 .offset(y: -20)
-
 
                 Spacer()
 
-                // Volume Control
+                // Lower Controls Section
                 HStack {
-                    VStack(spacing: 5) {
-                        ZStack {
-                            Image("volume_indicator_line")
-                                .resizable()
-                                .scaledToFit()
-                                .aspectRatio(contentMode: .fit)
-                                .frame(width: 142, height: 120)
-                                .offset(x: -1, y: -18)
-
-                            ZStack {
-                                Circle()
-                                    .fill(
-                                        LinearGradient(
-                                            stops: [
-                                                .init(color: .black, location: 0.31),
-                                                .init(color: Color(red: 0.67, green: 0.67, blue: 0.67), location: 1.0)
-                                            ],
-                                            startPoint: UnitPoint(x: 0.82, y: 1.18),
-                                            endPoint: UnitPoint(x: 0.25, y: 0.2)
-                                        )
-                                    )
-                                    .frame(width: 112.5, height: 112.5)
-                                    .shadow(color: .black.opacity(0.2), radius: 2.4, x: 5, y: 7)
-                                    .shadow(color: .black.opacity(0.76), radius: 2.45, x: 1, y: 2)
-
-                                Image("knob_black_ring")
-                                    .resizable()
-                                    .scaledToFit()
-                                    .frame(width: 116)
-
-                                Image("knob_control")
-                                    .resizable()
-                                    .scaledToFit()
-                                    .frame(width: 116)
-                                    .rotationEffect(.degrees(audioManager.volume * 240 - 123))
-                                    .animation(nil, value: audioManager.volume)
-                                    .gesture(
-                                        DragGesture()
-                                            .onChanged { value in
-                                                let center = CGPoint(x: 58, y: 58)
-                                                let currentVector = CGVector(dx: value.location.x - center.x, dy: value.location.y - center.y)
-                                                let currentAngle = atan2(currentVector.dy, currentVector.dx)
-
-                                                var currentDeg = Double(currentAngle) * 180.0 / .pi + 90.0
-                                                if currentDeg > 180 { currentDeg -= 360 }
-                                                if currentDeg < -180 { currentDeg += 360 }
-
-                                                if value.startLocation == value.location {
-                                                    let initialKnobDeg = audioManager.volume * 240.0 - 123.0
-                                                    angleOffset = currentDeg - initialKnobDeg
-                                                }
-
-                                                var targetDeg = currentDeg - angleOffset
-                                                if targetDeg > 180 { targetDeg -= 360 }
-                                                if targetDeg < -180 { targetDeg += 360 }
-
-                                                let newVolume = quantize(max(0, min(1, (targetDeg + 123.0) / 240.0)))
-
-                                                if newVolume != audioManager.volume {
-                                                    if isScreenOn {
-                                                        showVolume()
-                                                    }
-                                                    audioManager.triggerHaptic(.light)
-                                                    let calculatedRate = Float(0.7 + (newVolume * 1.0))
-                                                    audioManager.playSound("volume-tick-1", rate: calculatedRate)
-                                                    audioManager.volume = newVolume
-                                                }
-                                            }
-                                    )
-                            }
-                        }
-
-                        Text("VOLUME")
-                            .font(.custom("LED Dot-Matrix", size: 10))
-                            .foregroundColor(.black.opacity(0.5))
-                    }
+                    // Modular Volume Knob
+                    VolumeKnobView(
+                        audioManager: audioManager,
+                        isScreenOn: isScreenOn,
+                        showVolume: showVolume
+                    )
                     .padding(.leading, 30)
 
                     Spacer()
 
-                    // Skeuomorphic Rubber Power Button
-                    VStack {
-                        // The unchanging button hole carved into the chassis
-                        ZStack {
-                            Circle()
-                                .fill(Color.black)
-                                .frame(width: 48, height: 48)
-                                .shadow(color: .white.opacity(0.4), radius: 1, x: 0, y: 1) // bottom edge highlight of hole
-
-                            Button(action: {
-                                audioManager.triggerHaptic(.medium) // Keep the physical thud, lose the click
-
-                                if isScreenOn {
-                                    // POWERING DOWN SEQUENCE: Backlight Fade, then LCD text drain
-                                    showNotification("Powering off")
-                                    audioManager.stopPlayback()
-                                    isPlayToggled = false
-                                    
-                                    // 1. Backlight fades out
-                                    withAnimation(.easeOut(duration: 0.2)) {
-                                        isScreenOn = false
-                                    }
-
-                                    // 2. Text drains shortly after
-                                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                                        withAnimation(.easeOut(duration: 0.2)) {
-                                            isContentVisible = false
-                                        }
-                                    }
-                                } else {
-                                    // POWERING UP SEQUENCE: LCD Boot
-                                    showNotification("Ready for the classics")
-
-                                    // 1. Backlight ignites
-                                    withAnimation(.easeIn(duration: 0.15)) {
-                                        isScreenOn = true
-                                    }
-
-                                    // 2. Text boots up slightly later
-                                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                                        withAnimation(.easeIn(duration: 0.2)) {
-                                            isContentVisible = true
-                                        }
-                                    }
-                                }
-                            }) {
-                                ZStack {
-                                    // Actual rubber button (matte pastel green, flatter gradient)
-                                    Circle()
-                                        .fill(
-                                            LinearGradient(
-                                                stops: [
-                                                    .init(color: Color(hex: "c5e6d1"), location: 0.0), // Soft top edge
-                                                    .init(color: Color(hex: "a8d2ba"), location: 0.5), // Matte body
-                                                    .init(color: Color(hex: "92bfa5"), location: 1.0)  // Soft shadow
-                                                ],
-                                                startPoint: .topLeading,
-                                                endPoint: .bottomTrailing
-                                            )
-                                        )
-                                        .frame(width: 44, height: 44)
-                                    // Soft diffused shadow for rubber instead of sharp plastic highlights
-                                        .shadow(color: .black.opacity(0.4), radius: 2, x: 0, y: -1)
-                                        .shadow(color: .black.opacity(0.1), radius: 1, x: 0, y: 1)
-
-                                    // Power Icon slightly inset
-                                    Image(systemName: "power")
-                                        .font(.system(size: 18, weight: .bold))
-                                        .foregroundColor(.black.opacity(0.6))
-                                        .shadow(color: .white.opacity(0.3), radius: 0.5, x: 0, y: 1) // Inset engraving effect
-                                }
-                            }
-                            .buttonStyle(RubberButtonStyle())
-                        }
-
-                        Text("POWER")
-                            .font(.custom("LED Dot-Matrix", size: 10))
-                            .foregroundColor(.black.opacity(0.5))
-                            .padding(.top, 4)
-                    }
+                    // Power Button Component
+                    PowerButton(
+                        isScreenOn: $isScreenOn,
+                        isContentVisible: $isContentVisible,
+                        isPlayToggled: $isPlayToggled,
+                        audioManager: audioManager,
+                        showNotification: showNotification
+                    )
                     .padding(.trailing, 40)
                     .offset(y: -15)
                 }
 
-                // Playback Controls
-                HStack(spacing: 5) {
-                    controlButton(icon: "ic_replay", isActive: false, altIcon: nil) {
-                        audioManager.triggerHaptic(.light)
-                        audioManager.playSound("button-click")
-                        
-                        guard isScreenOn else {
-                            showNotification("Turn on the power to play")
-                            return
-                        }
-                        
-                            audioManager.showNowPlaying()
-                            audioManager.stopPlayback()
-                            audioManager.playTestAudio()
-                        }
-                        .drawingGroup()
-
-                        controlButton(icon: "ic_previous", isActive: false, altIcon: nil) {
-                            audioManager.triggerHaptic(.light)
-                            audioManager.playSound("button-click")
-                            guard isScreenOn else {
-                                showNotification("Turn on the power to play")
-                                return
-                            }
-                            var transaction = Transaction()
-                            transaction.disablesAnimations = true
-                            withTransaction(transaction) {
-                                audioManager.playPreviousTrack()
-                            }
-                        }
-                        .drawingGroup()
-
-                        controlButton(
-                            icon: isPlayToggled ? "ic_pause" : "ic_play",
-                            background: "button_enable",
-                            isActive: isPlayToggled,
-                            altIcon: isPlayToggled ? "ic_play" : "ic_pause"
-                        ) {
-                            audioManager.triggerHaptic(.light)
-                            audioManager.playSound(isPlayToggled ? "button-click" : "button-release")
-                            guard isScreenOn else {
-                                showNotification("Turn on the power to play")
-                                return
-                            }
-                            var transaction = Transaction()
-                            transaction.disablesAnimations = true
-                            withTransaction(transaction) {
-                                if isPlayToggled {
-                                    audioManager.pausePlayback()
-                                    isPlayToggled = false
-                                } else {
-                                    if audioManager.isPaused {
-                                        audioManager.resumePlayback()
-                                    } else {
-                                        audioManager.showNowPlaying()
-                                        audioManager.playTestAudio()
-                                    }
-                                    isPlayToggled = true
-                                }
-                            }
-                        }
-                        .drawingGroup()
-
-                        controlButton(icon: "ic_next", isActive: false, altIcon: nil) {
-                            audioManager.triggerHaptic(.light)
-                            audioManager.playSound("button-click")
-                            guard isScreenOn else {
-                                showNotification("Turn on the power to play")
-                                return
-                            }
-                            var transaction = Transaction()
-                            transaction.disablesAnimations = true
-                            withTransaction(transaction) {
-                                audioManager.playNextTrack()
-                            }
-                        }
-                        .drawingGroup()
-
-                    controlButton(icon: "ic_stop", isActive: false, altIcon: nil) {
-                        audioManager.triggerHaptic(.light)
-                        audioManager.playSound("button-click")
-                        guard isScreenOn else {
-                            showNotification("Turn on the power to play")
-                            return
-                        }
-                        audioManager.stopPlayback()
-                        isPlayToggled = false
-                    }
-                    .drawingGroup()
-                }
-                .transaction { transaction in
-                    transaction.disablesAnimations = true
-                }
-                .padding(.vertical, 3)
-                .padding(.horizontal, 2)
-                .background(
-                    RoundedRectangle(cornerRadius: 5)
-                        .fill(Color(hex: "191818"))
+                // Modular Playback Controls
+                PlaybackControlsView(
+                    audioManager: audioManager,
+                    isPlayToggled: $isPlayToggled,
+                    isScreenOn: isScreenOn,
+                    showNotification: showNotification,
+                    showCredits: $showCredits
                 )
-                .overlay(alignment: .bottomTrailing) {
-                    Button(action: {
-                        audioManager.triggerHaptic(.light)
-                        showCredits = true
-                    }) {
-                        Text("CREDITS")
-                            .font(.custom("LED Dot-Matrix", size: 9))
-                            .foregroundColor(.black.opacity(0.6))
-                            .padding(6)
-                            .background(
-                                RoundedRectangle(cornerRadius: 3)
-                                    .stroke(Color.black.opacity(0.08), lineWidth: 1)
-                                    .shadow(color: .white.opacity(0.5), radius: 0.5, x: 0, y: 1)
-                            )
-                    }
-                    .offset(y: 35)
-                }
                 .padding(.bottom, 60)
             }
         }
@@ -1154,6 +102,14 @@ public struct ContentView: View {
                 .presentationDragIndicator(.visible)
         }
         .overlay(alignment: .top) {
+            notificationOverlay
+        }
+    }
+
+    // MARK: - Private Components & Helpers
+
+    private var notificationOverlay: some View {
+        Group {
             if let msg = notificationMessage {
                 Text(msg)
                     .font(.custom("LED Dot-Matrix", size: 14))
@@ -1169,44 +125,6 @@ public struct ContentView: View {
                     .padding(.top, 60)
             }
         }
-    }
-
-    private func controlButton(
-        icon: String,
-        background: String = "button_enable",
-        isActive: Bool = false,
-        altIcon: String? = nil,
-        size: CGFloat = 65,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            Color.clear.frame(width: size, height: size * 0.6)
-        }
-        .buttonStyle(NoAnimationButtonStyle(
-            baseBackground: background,
-            baseIcon: icon,
-            altIcon: altIcon,
-            isActive: isActive,
-            size: size
-        ))
-    }
-
-    private var visibleTracks: [AudioTrack] {
-        let count = audioManager.availableTracks.count
-        if count == 0 { return [] }
-        let current = audioManager.selectedTrackIndex
-        let prev = (current - 1 + count) % count
-        let next = (current + 1) % count
-        return [
-            audioManager.availableTracks[prev],
-            audioManager.availableTracks[current],
-            audioManager.availableTracks[next]
-        ]
-    }
-
-    func quantize(_ value: Double) -> Double {
-        let step = 1.0 / Double(volumeSteps - 1)
-        return (value / step).rounded() * step
     }
 
     private func showVolume() {
@@ -1234,205 +152,85 @@ public struct ContentView: View {
     }
 }
 
-struct PlayingVisualizerView: View {
-    var body: some View {
-        ZStack {
-            // This container defines the shape and bounds
-            LoopingVideoPlayer(videoName: "playing-visualizer-3")
-                .grayscale(1.0)
-                .scaleEffect(1.2) // Enlarged to fill container
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .clipShape(RoundedRectangle(cornerRadius: 10))
-    }
-}
-
-struct LoopingVideoPlayer: UIViewRepresentable {
-    let videoName: String
-    func makeUIView(context: Context) -> UIView {
-        return LoopingVideoPlayerUIView(videoName: videoName)
-    }
-    func updateUIView(_ uiView: UIView, context: Context) {}
-}
-
-class LoopingVideoPlayerUIView: UIView {
-    private let playerLayer = AVPlayerLayer()
-    private var playerLooper: AVPlayerLooper?
-    private var queuePlayer: AVQueuePlayer?
-    init(videoName: String) {
-        super.init(frame: .zero)
-        let bundle: Bundle = {
-#if SWIFT_PACKAGE
-            return Bundle.module
-#else
-            return Bundle.main
-#endif
-        }()
-        guard let fileURL = bundle.url(forResource: videoName, withExtension: "mov") ??
-                bundle.url(forResource: videoName, withExtension: "mov", subdirectory: "Resources") ??
-                bundle.url(forResource: videoName, withExtension: "mp4") ??
-                bundle.url(forResource: videoName, withExtension: "mp4", subdirectory: "Resources") else {
-            return
-        }
-        let asset = AVAsset(url: fileURL)
-        let item = AVPlayerItem(asset: asset)
-        let player = AVQueuePlayer(playerItem: item)
-        player.isMuted = true
-        self.queuePlayer = player
-        self.playerLooper = AVPlayerLooper(player: player, templateItem: item)
-        playerLayer.player = player
-        playerLayer.videoGravity = .resizeAspectFill
-        layer.addSublayer(playerLayer)
-        player.play()
-    }
-    override func layoutSubviews() {
-        super.layoutSubviews()
-        playerLayer.frame = bounds
-    }
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-}
-
-struct VolumeIndicatorView: View {
-    let volume: Double
-    var body: some View {
-        HStack(alignment: .bottom, spacing: 10) {
-            ForEach(0..<6) { index in
-                let segmentCount = 2 + (index * 3)
-                let threshold = Double(index) / 6.0
-                VStack(spacing: -13) {
-                    ForEach(0..<segmentCount, id: \.self) { _ in
-                        Text("-")
-                            .font(.custom("LED Dot-Matrix", size: 18))
-                    }
-                }
-                .foregroundColor(volume > threshold ? .black : .black.opacity(0.2))
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: 30, alignment: .bottom)
-    }
-}
-
-struct NoAnimationButtonStyle: ButtonStyle {
-    let baseBackground: String
-    let baseIcon: String
-    let altIcon: String?
-    let isActive: Bool
-    let size: CGFloat
-    func makeBody(configuration: Configuration) -> some View {
-        let isPressedOrActive = configuration.isPressed || isActive
-        let currentIcon = (configuration.isPressed && altIcon != nil) ? altIcon! : baseIcon
-        return ZStack {
-            Image(isPressedOrActive ? "button_disable" : baseBackground)
-                .resizable()
-                .frame(width: size, height: size * 0.6)
-            Image(currentIcon)
-                .resizable()
-                .scaledToFit()
-                .frame(width: size * 0.35, height: size * 0.35)
-        }
-    }
-}
-
-struct PlainNoAnimationButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .opacity(configuration.isPressed ? 0.7 : 1.0)
-            .animation(nil, value: configuration.isPressed)
-    }
-}
-
-struct RubberButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .scaleEffect(configuration.isPressed ? 0.92 : 1.0) // Squish effect
-            .opacity(configuration.isPressed ? 0.9 : 1.0) // Slight compression darkening
-            .animation(.interactiveSpring(response: 0.2, dampingFraction: 0.5), value: configuration.isPressed)
-    }
-}
-
-struct CreditsView: View {
-    var body: some View {
-        ZStack {
-            Color(red: 0xF7/255, green: 0xF7/255, blue: 0xF6/255).ignoresSafeArea()
-            
-            VStack(spacing: 30) {
-                VStack(spacing: 12) {
-                    Text("CREDITS")
-                        .font(.custom("LED Dot-Matrix", size: 24))
-                        .foregroundColor(.black)
-                }
-                .padding(.top, 40)
-                
-                Divider()
-                    .padding(.horizontal, 40)
-                
-                VStack(alignment: .leading, spacing: 24) {
-                    CreditItem(
-                        title: "VISUAL DESIGN & INTERFACE",
-                        description: "Design by",
-                        author: "Sardor Abdujalolov",
-                        link: "https://dribbble.com/shots/23964921-Skeumorphic-media-player"
-                    )
-                    
-                    CreditItem(
-                        title: "AUDIO ARCHIVE & RECORDINGS",
-                        description: "Classical music recordings and audio resources from the classicals archive.",
-                        author: "Classicals.de",
-                        link: "https://www.classicals.de/"
-                    )
-                }
-                .padding(.horizontal, 40)
-                
-                Spacer()
-            }
-        }
-    }
-}
-
-struct CreditItem: View {
-    let title: String
-    let description: String
-    let author: String
-    let link: String
+// Internal Power Button Sub-component
+struct PowerButton: View {
+    @Binding var isScreenOn: Bool
+    @Binding var isContentVisible: Bool
+    @Binding var isPlayToggled: Bool
+    @ObservedObject var audioManager: RadioAudioManager
+    let showNotification: (String) -> Void
     
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(title)
-                .font(.custom("LED Dot-Matrix", size: 10))
-                .foregroundColor(.black.opacity(0.6))
-            
-            Text(description)
-                .font(.custom("LED Dot-Matrix", size: 12))
-                .foregroundColor(.black.opacity(0.8))
-                .lineLimit(2)
-                .fixedSize(horizontal: false, vertical: true)
-            
-            Link(destination: URL(string: link)!) {
-                HStack(spacing: 4) {
-                    Text(author)
-                        .font(.custom("LED Dot-Matrix", size: 14))
-                        .foregroundColor(.black)
-                    
-                    Image(systemName: "arrow.up.right")
-                        .font(.system(size: 8))
-                        .foregroundColor(.black.opacity(0.7))
+        VStack {
+            ZStack {
+                Circle()
+                    .fill(Color.black)
+                    .frame(width: 48, height: 48)
+                    .shadow(color: .white.opacity(0.4), radius: 1, x: 0, y: 1)
+
+                Button(action: handlePowerToggle) {
+                    ZStack {
+                        Circle()
+                            .fill(
+                                LinearGradient(
+                                    stops: [
+                                        .init(color: Color(hex: "c5e6d1"), location: 0.0),
+                                        .init(color: Color(hex: "a8d2ba"), location: 0.5),
+                                        .init(color: Color(hex: "92bfa5"), location: 1.0)
+                                    ],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                )
+                            )
+                            .frame(width: 44, height: 44)
+                            .shadow(color: .black.opacity(0.4), radius: 2, x: 0, y: -1)
+                            .shadow(color: .black.opacity(0.1), radius: 1, x: 0, y: 1)
+
+                        Image(systemName: "power")
+                            .font(.system(size: 18, weight: .bold))
+                            .foregroundColor(.black.opacity(0.6))
+                            .shadow(color: .white.opacity(0.3), radius: 0.5, x: 0, y: 1)
+                    }
                 }
-                .padding(.vertical, 4)
+                .buttonStyle(RubberButtonStyle())
             }
+
+            Text("POWER")
+                .font(.custom("LED Dot-Matrix", size: 10))
+                .foregroundColor(.black.opacity(0.5))
+                .padding(.top, 4)
         }
     }
-}
+    
+    private func handlePowerToggle() {
+        audioManager.triggerHaptic(.medium)
 
-extension Color {
-    init(hex: String) {
-        let hex = hex.trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
-        var int: UInt64 = 0
-        Scanner(string: hex).scanHexInt64(&int)
-        let r = Double((int >> 16) & 0xFF) / 255
-        let g = Double((int >> 8) & 0xFF) / 255
-        let b = Double(int & 0xFF) / 255
-        self.init(red: r, green: g, blue: b)
+        if isScreenOn {
+            showNotification("Powering off")
+            audioManager.stopPlayback()
+            isPlayToggled = false
+            
+            withAnimation(.easeOut(duration: 0.2)) {
+                isScreenOn = false
+            }
+
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                withAnimation(.easeOut(duration: 0.2)) {
+                    isContentVisible = false
+                }
+            }
+        } else {
+            showNotification("Ready for the classics")
+
+            withAnimation(.easeIn(duration: 0.15)) {
+                isScreenOn = true
+            }
+
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                withAnimation(.easeIn(duration: 0.2)) {
+                    isContentVisible = true
+                }
+            }
+        }
     }
 }

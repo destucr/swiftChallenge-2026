@@ -8,13 +8,13 @@ import PackageDescription
 import AppleProductTypes
 
 let package = Package(
-    name: "SSC-Boxy",
+    name: "Boxy",
     platforms: [
         .iOS("18.1")
     ],
     products: [
         .iOSApplication(
-            name: "SSC-Boxy",
+            name: "Boxy",
             targets: ["AppModule"],
             bundleIdentifier: "com.destucr.boxy",
             teamIdentifier: "6PN64DQKLX",

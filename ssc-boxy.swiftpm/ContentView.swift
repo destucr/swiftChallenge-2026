@@ -21,7 +21,7 @@ public class RadioAudioManager: NSObject, ObservableObject {
     public static let shared = RadioAudioManager()
 
     // Serial queue to ensure audio operations never overlap
-    private let audioQueue = DispatchQueue(label: "com.destucr.boxy.audio")
+    private let audioQueue = DispatchQueue(label: "com.boxy.audio")
 
     private let engine = AVAudioEngine()
     private let playerNode = AVAudioPlayerNode()
@@ -56,6 +56,9 @@ public class RadioAudioManager: NSObject, ObservableObject {
 
     @Published var isPlaying = false
     @Published var isPaused = false
+    @Published var showNowPlayingOverlay = false
+    private var nowPlayingTimer: Timer?
+    private var isManualStopping = false
 
     @Published var isMonitoring = false
     @Published var isAutoEchoEnabled = false
@@ -411,6 +414,32 @@ public class RadioAudioManager: NSObject, ObservableObject {
         }
     }
 
+    public func playNextTrack() {
+        let nextIndex = (selectedTrackIndex + 1) % availableTracks.count
+        playTrack(at: nextIndex, autoPlay: isPlaying)
+        if isPlaying {
+            showNowPlaying()
+        }
+    }
+
+    public func playPreviousTrack() {
+        let prevIndex = (selectedTrackIndex - 1 + availableTracks.count) % availableTracks.count
+        playTrack(at: prevIndex, autoPlay: isPlaying)
+        if isPlaying {
+            showNowPlaying()
+        }
+    }
+
+    public func showNowPlaying() {
+        Task { @MainActor in
+            self.showNowPlayingOverlay = true
+            self.nowPlayingTimer?.invalidate()
+            self.nowPlayingTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: false) { [weak self] _ in
+                self?.showNowPlayingOverlay = false
+            }
+        }
+    }
+
     public func playTestAudio() {
         let trackToPlay = selectedTrack
         audioQueue.async { [weak self] in
@@ -461,7 +490,13 @@ public class RadioAudioManager: NSObject, ObservableObject {
             playerNode.reset()
             playerNode.scheduleFile(file, at: nil) { [weak self] in
                 Task { @MainActor in
-                    self?.isPlaying = false
+                    guard let self = self else { return }
+                    if self.isPlaying && !self.isManualStopping {
+                        self.playNextTrack()
+                    } else {
+                        self.isPlaying = false
+                        self.isManualStopping = false
+                    }
                 }
             }
             playerNode.play()
@@ -543,6 +578,7 @@ public class RadioAudioManager: NSObject, ObservableObject {
         audioQueue.async { [weak self] in
             guard let self else { return }
             if self.isPlaying {
+                self.isManualStopping = true
                 self.playerNode.pause()
                 self.noisePlayerNode.pause()
                 Task { @MainActor in
@@ -572,7 +608,9 @@ public class RadioAudioManager: NSObject, ObservableObject {
 
     public func stopPlayback() {
         audioQueue.async { [weak self] in
-            self?.stopPlaybackInternal()
+            guard let self else { return }
+            self.isManualStopping = true
+            self.stopPlaybackInternal()
         }
     }
 
@@ -582,6 +620,7 @@ public class RadioAudioManager: NSObject, ObservableObject {
         Task { @MainActor in
             self.isPlaying = false
             self.isPaused = false
+            self.isManualStopping = false
         }
     }
 
@@ -656,14 +695,13 @@ public struct ContentView: View {
 
     @State private var showVolumeDisplay = false
     @State private var volumeTimer: Timer?
-    @State private var showNowPlayingOverlay = false
-    @State private var nowPlayingTimer: Timer?
 
     // Power Animation States (LCD Backlight Fade)
     @State private var isScreenOn = true
     @State private var isContentVisible = true
     @State private var notificationMessage: String? = nil
     @State private var notificationTimer: Timer? = nil
+    @State private var showCredits = false
 
     let volumeSteps = 32
 
@@ -701,7 +739,7 @@ public struct ContentView: View {
                     .resizable()
                     .scaledToFit()
                     .frame(height: 320)
-                    .padding(.top, 20)
+                    .padding(.top, 25)
 
                 // Display with Song List & Volume Indicator
                 ZStack {
@@ -723,7 +761,7 @@ public struct ContentView: View {
                                 if showVolumeDisplay {
                                     Text("VOLUME")
                                         .font(.custom("LED Dot-Matrix", size: 12))
-                                } else if !audioManager.isPlaying && !showNowPlayingOverlay {
+                                } else if !audioManager.isPlaying && !audioManager.showNowPlayingOverlay {
                                     Text("MUSIC")
                                         .font(.custom("LED Dot-Matrix", size: 12))
                                 }
@@ -733,7 +771,7 @@ public struct ContentView: View {
                                 if showVolumeDisplay {
                                     Text("\(Int(audioManager.volume * 100))%")
                                         .font(.custom("LED Dot-Matrix", size: 12))
-                                } else if !audioManager.isPlaying && !showNowPlayingOverlay {
+                                } else if !audioManager.isPlaying && !audioManager.showNowPlayingOverlay {
                                     Text("FM")
                                         .font(.custom("LED Dot-Matrix", size: 12))
                                 }
@@ -754,7 +792,7 @@ public struct ContentView: View {
                                 }
                                 .padding(.top, 10)
                                 .frame(maxWidth: 200, maxHeight: 45)
-                            } else if showNowPlayingOverlay {
+                            } else if audioManager.showNowPlayingOverlay {
                                 VStack(alignment: .center, spacing: 6) {
                                     Text("NOW PLAYING")
                                         .font(.custom("LED Dot-Matrix", size: 12))
@@ -770,7 +808,7 @@ public struct ContentView: View {
                                 .frame(width: 240)
                             } else if audioManager.isPlaying {
                                 PlayingVisualizerView()
-                                    .frame(width: 280, height: 80)
+                                    .frame(width: 260, height: 82)
                                     .offset(y: -5)
                             } else {
                                 // Track List Overlay
@@ -783,7 +821,7 @@ public struct ContentView: View {
                                             withTransaction(transaction) {
                                                 if let idx = audioManager.availableTracks.firstIndex(of: track) {
                                                     if audioManager.isPlaying {
-                                                        showNowPlaying()
+                                                        audioManager.showNowPlaying()
                                                     }
                                                     audioManager.playTrack(at: idx)
                                                 }
@@ -861,7 +899,7 @@ public struct ContentView: View {
                                     .resizable()
                                     .scaledToFit()
                                     .frame(width: 116)
-                                    .rotationEffect(.degrees(audioManager.volume * 240 - 120))
+                                    .rotationEffect(.degrees(audioManager.volume * 240 - 123))
                                     .animation(nil, value: audioManager.volume)
                                     .gesture(
                                         DragGesture()
@@ -875,7 +913,7 @@ public struct ContentView: View {
                                                 if currentDeg < -180 { currentDeg += 360 }
 
                                                 if value.startLocation == value.location {
-                                                    let initialKnobDeg = audioManager.volume * 240.0 - 120.0
+                                                    let initialKnobDeg = audioManager.volume * 240.0 - 123.0
                                                     angleOffset = currentDeg - initialKnobDeg
                                                 }
 
@@ -883,7 +921,7 @@ public struct ContentView: View {
                                                 if targetDeg > 180 { targetDeg -= 360 }
                                                 if targetDeg < -180 { targetDeg += 360 }
 
-                                                let newVolume = quantize(max(0, min(1, (targetDeg + 120.0) / 240.0)))
+                                                let newVolume = quantize(max(0, min(1, (targetDeg + 123.0) / 240.0)))
 
                                                 if newVolume != audioManager.volume {
                                                     if isScreenOn {
@@ -1002,76 +1040,72 @@ public struct ContentView: View {
                             return
                         }
                         
-                        showNowPlaying()
-                        audioManager.stopPlayback()
-                        audioManager.playTestAudio()
-                    }
-                    .drawingGroup()
-
-                    controlButton(icon: "ic_previous", isActive: false, altIcon: nil) {
-                        audioManager.triggerHaptic(.light)
-                        audioManager.playSound("button-click")
-                        guard isScreenOn else {
-                            showNotification("Turn on the power to play")
-                            return
+                            audioManager.showNowPlaying()
+                            audioManager.stopPlayback()
+                            audioManager.playTestAudio()
                         }
-                        var transaction = Transaction()
-                        transaction.disablesAnimations = true
-                        withTransaction(transaction) {
-                            if audioManager.isPlaying || isPlayToggled {
-                                showNowPlaying()
+                        .drawingGroup()
+
+                        controlButton(icon: "ic_previous", isActive: false, altIcon: nil) {
+                            audioManager.triggerHaptic(.light)
+                            audioManager.playSound("button-click")
+                            guard isScreenOn else {
+                                showNotification("Turn on the power to play")
+                                return
                             }
-                            let prevIndex = (audioManager.selectedTrackIndex - 1 + audioManager.availableTracks.count) % audioManager.availableTracks.count
-                            audioManager.playTrack(at: prevIndex, autoPlay: audioManager.isPlaying)
-                        }
-                    }
-                    .drawingGroup()
-
-                    controlButton(
-                        icon: isPlayToggled ? "ic_pause" : "ic_play",
-                        background: "button_enable",
-                        isActive: isPlayToggled,
-                        altIcon: isPlayToggled ? "ic_play" : "ic_pause"
-                    ) {
-                        audioManager.triggerHaptic(.light)
-                        audioManager.playSound(isPlayToggled ? "button-click" : "button-release")
-                        guard isScreenOn else {
-                            showNotification("Turn on the power to play")
-                            return
-                        }
-                        var transaction = Transaction()
-                        transaction.disablesAnimations = true
-                        withTransaction(transaction) {
-                            if isPlayToggled {
-                                audioManager.stopPlayback()
-                                isPlayToggled = false
-                            } else {
-                                showNowPlaying()
-                                audioManager.playTestAudio()
-                                isPlayToggled = true
+                            var transaction = Transaction()
+                            transaction.disablesAnimations = true
+                            withTransaction(transaction) {
+                                audioManager.playPreviousTrack()
                             }
                         }
-                    }
-                    .drawingGroup()
+                        .drawingGroup()
 
-                    controlButton(icon: "ic_next", isActive: false, altIcon: nil) {
-                        audioManager.triggerHaptic(.light)
-                        audioManager.playSound("button-click")
-                        guard isScreenOn else {
-                            showNotification("Turn on the power to play")
-                            return
-                        }
-                        var transaction = Transaction()
-                        transaction.disablesAnimations = true
-                        withTransaction(transaction) {
-                            if audioManager.isPlaying || isPlayToggled {
-                                showNowPlaying()
+                        controlButton(
+                            icon: isPlayToggled ? "ic_pause" : "ic_play",
+                            background: "button_enable",
+                            isActive: isPlayToggled,
+                            altIcon: isPlayToggled ? "ic_play" : "ic_pause"
+                        ) {
+                            audioManager.triggerHaptic(.light)
+                            audioManager.playSound(isPlayToggled ? "button-click" : "button-release")
+                            guard isScreenOn else {
+                                showNotification("Turn on the power to play")
+                                return
                             }
-                            let nextIndex = (audioManager.selectedTrackIndex + 1) % audioManager.availableTracks.count
-                            audioManager.playTrack(at: nextIndex, autoPlay: audioManager.isPlaying)
+                            var transaction = Transaction()
+                            transaction.disablesAnimations = true
+                            withTransaction(transaction) {
+                                if isPlayToggled {
+                                    audioManager.pausePlayback()
+                                    isPlayToggled = false
+                                } else {
+                                    if audioManager.isPaused {
+                                        audioManager.resumePlayback()
+                                    } else {
+                                        audioManager.showNowPlaying()
+                                        audioManager.playTestAudio()
+                                    }
+                                    isPlayToggled = true
+                                }
+                            }
                         }
-                    }
-                    .drawingGroup()
+                        .drawingGroup()
+
+                        controlButton(icon: "ic_next", isActive: false, altIcon: nil) {
+                            audioManager.triggerHaptic(.light)
+                            audioManager.playSound("button-click")
+                            guard isScreenOn else {
+                                showNotification("Turn on the power to play")
+                                return
+                            }
+                            var transaction = Transaction()
+                            transaction.disablesAnimations = true
+                            withTransaction(transaction) {
+                                audioManager.playNextTrack()
+                            }
+                        }
+                        .drawingGroup()
 
                     controlButton(icon: "ic_stop", isActive: false, altIcon: nil) {
                         audioManager.triggerHaptic(.light)
@@ -1094,8 +1128,30 @@ public struct ContentView: View {
                     RoundedRectangle(cornerRadius: 5)
                         .fill(Color(hex: "191818"))
                 )
-                .padding(.bottom, 40)
+                .overlay(alignment: .bottomTrailing) {
+                    Button(action: {
+                        audioManager.triggerHaptic(.light)
+                        showCredits = true
+                    }) {
+                        Text("CREDITS")
+                            .font(.custom("LED Dot-Matrix", size: 9))
+                            .foregroundColor(.black.opacity(0.6))
+                            .padding(6)
+                            .background(
+                                RoundedRectangle(cornerRadius: 3)
+                                    .stroke(Color.black.opacity(0.08), lineWidth: 1)
+                                    .shadow(color: .white.opacity(0.5), radius: 0.5, x: 0, y: 1)
+                            )
+                    }
+                    .offset(y: 35)
+                }
+                .padding(.bottom, 60)
             }
+        }
+        .sheet(isPresented: $showCredits) {
+            CreditsView()
+                .presentationDetents([.medium])
+                .presentationDragIndicator(.visible)
         }
         .overlay(alignment: .top) {
             if let msg = notificationMessage {
@@ -1176,18 +1232,6 @@ public struct ContentView: View {
             }
         }
     }
-
-    private func showNowPlaying() {
-        showNowPlayingOverlay = true
-        nowPlayingTimer?.invalidate()
-        nowPlayingTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: false) { _ in
-            var transaction = Transaction()
-            transaction.disablesAnimations = true
-            withTransaction(transaction) {
-                showNowPlayingOverlay = false
-            }
-        }
-    }
 }
 
 struct PlayingVisualizerView: View {
@@ -1196,7 +1240,7 @@ struct PlayingVisualizerView: View {
             // This container defines the shape and bounds
             LoopingVideoPlayer(videoName: "playing-visualizer-3")
                 .grayscale(1.0)
-                .scaleEffect(1.8) // Enlarged to fill container
+                .scaleEffect(1.2) // Enlarged to fill container
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .clipShape(RoundedRectangle(cornerRadius: 10))
@@ -1305,6 +1349,79 @@ struct RubberButtonStyle: ButtonStyle {
             .scaleEffect(configuration.isPressed ? 0.92 : 1.0) // Squish effect
             .opacity(configuration.isPressed ? 0.9 : 1.0) // Slight compression darkening
             .animation(.interactiveSpring(response: 0.2, dampingFraction: 0.5), value: configuration.isPressed)
+    }
+}
+
+struct CreditsView: View {
+    var body: some View {
+        ZStack {
+            Color(red: 0xF7/255, green: 0xF7/255, blue: 0xF6/255).ignoresSafeArea()
+            
+            VStack(spacing: 30) {
+                VStack(spacing: 12) {
+                    Text("CREDITS")
+                        .font(.custom("LED Dot-Matrix", size: 24))
+                        .foregroundColor(.black)
+                }
+                .padding(.top, 40)
+                
+                Divider()
+                    .padding(.horizontal, 40)
+                
+                VStack(alignment: .leading, spacing: 24) {
+                    CreditItem(
+                        title: "VISUAL DESIGN & INTERFACE",
+                        description: "Design by",
+                        author: "Sardor Abdujalolov",
+                        link: "https://dribbble.com/shots/23964921-Skeumorphic-media-player"
+                    )
+                    
+                    CreditItem(
+                        title: "AUDIO ARCHIVE & RECORDINGS",
+                        description: "Classical music recordings and audio resources from the classicals archive.",
+                        author: "Classicals.de",
+                        link: "https://www.classicals.de/"
+                    )
+                }
+                .padding(.horizontal, 40)
+                
+                Spacer()
+            }
+        }
+    }
+}
+
+struct CreditItem: View {
+    let title: String
+    let description: String
+    let author: String
+    let link: String
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.custom("LED Dot-Matrix", size: 10))
+                .foregroundColor(.black.opacity(0.6))
+            
+            Text(description)
+                .font(.custom("LED Dot-Matrix", size: 12))
+                .foregroundColor(.black.opacity(0.8))
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+            
+            Link(destination: URL(string: link)!) {
+                HStack(spacing: 4) {
+                    Text(author)
+                        .font(.custom("LED Dot-Matrix", size: 14))
+                        .foregroundColor(.black)
+                    
+                    Image(systemName: "arrow.up.right")
+                        .font(.system(size: 8))
+                        .foregroundColor(.black.opacity(0.7))
+                }
+                .padding(.vertical, 4)
+            }
+        }
     }
 }
 

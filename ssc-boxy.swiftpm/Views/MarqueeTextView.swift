@@ -12,7 +12,7 @@ struct MarqueeText: View {
     let text: String
     let font: Font
     let color: Color
-    var delay: Double = 0.3
+    var delay: Double = 2
     var speed: Double = 28.0
     var gap: CGFloat = 24
 
@@ -38,6 +38,7 @@ struct MarqueeText: View {
                     .fixedSize()
                     .offset(x: offset + textWidth + gap)
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
             .background(
                 Text(text)
                     .font(font)
@@ -52,7 +53,7 @@ struct MarqueeText: View {
                             }
                             .onChange(of: text) { _ in
                                 stop()
-                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
                                     textWidth = textGeo.size.width
                                     containerWidth = geo.size.width
                                     startIfNeeded()

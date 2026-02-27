@@ -76,7 +76,7 @@ struct DisplayView: View {
                             .offset(y: -5)
                     } else {
                         // Track List Overlay
-                        VStack(alignment: .leading, spacing: 4) {
+                        VStack(alignment: .leading, spacing: 2) {
                             ForEach(visibleTracks) { track in
                                 let isSelected = audioManager.selectedTrack == track
                                 Button(action: {
@@ -92,11 +92,15 @@ struct DisplayView: View {
                                         }
                                     }
                                 }) {
-                                    HStack(alignment: .center, spacing: 5) {
-                                        Text(isSelected ? ">" : "-")
-                                            .font(.custom("LED Dot-Matrix", size: 14))
-                                            .foregroundColor(isSelected ? .black : .black.opacity(0.2))
-                                            .padding(.leading, isSelected ? 5 : 0)
+                                    HStack(alignment: .center) {
+                                        // Fixed indicator area (20pt) with intentional selection shift
+                                        ZStack(alignment: .leading) {
+                                            Text(isSelected ? ">" : "-")
+                                                .font(.custom("LED Dot-Matrix", size: 14))
+                                                .foregroundColor(isSelected ? .black : .black.opacity(0.2))
+                                        }
+                                        .frame(width: 5, alignment: .leading)
+                                        .padding(.leading, isSelected ? 5 : 0)
 
                                         if isSelected {
                                             MarqueeText(

@@ -58,7 +58,7 @@ struct DisplayView: View {
                         .frame(maxWidth: 200, maxHeight: 45)
                     } else if audioManager.showNowPlayingOverlay {
                         VStack(alignment: .center, spacing: 6) {
-                            Text("NOW PLAYING")
+                            Text(audioManager.nowPlayingMessage)
                                 .font(.custom("LED Dot-Matrix", size: 12))
                                 .opacity(0.8)
 

@@ -44,8 +44,10 @@ public class RadioAudioManager: NSObject, ObservableObject {
     @Published var isPlaying = false
     @Published var isPaused = false
     @Published var showNowPlayingOverlay = false
+    @Published var nowPlayingMessage: String = "NOW PLAYING"
     private var nowPlayingTimer: Timer?
     private var isManualStopping = false
+    private var currentSessionID = UUID()
 
     @Published var isMonitoring = false
     @Published var isAutoEchoEnabled = false
@@ -58,15 +60,12 @@ public class RadioAudioManager: NSObject, ObservableObject {
 
     @Published var availableTracks: [AudioTrack] = [
         AudioTrack(title: "Beethoven - Coriolan Overture", filename: "Classicals.de - Beethoven - Coriolan Overture - Op.62", artist: "Beethoven"),
-        AudioTrack(title: "Brahms - Fantasia, Op. 116 No. 2", filename: "Classicals.de - Brahms - Fantasia, Opus 116 - No. 2 - Arranged for Strings", artist: "Brahms"),
         AudioTrack(title: "Chopin - Nocturne Op. 9 no. 2", filename: "Classicals.de - Chopin - Nocturne Op. 9 no. 2 in E-flat major", artist: "Chopin"),
         AudioTrack(title: "Mozart - Marriage of Figaro", filename: "Classicals.de - Mozart - Marriage of Figaro", artist: "Mozart"),
-        AudioTrack(title: "Mozart - Sonata No. 8 D major", filename: "Classicals.de - Mozart - Sonata No. 8 D major - 1. Movement - KV 311", artist: "Mozart"),
         AudioTrack(title: "Mozart - Symphony in F major", filename: "Classicals.de - Mozart - Symphony in F major, K.Anh.223:19a - III", artist: "Mozart"),
         AudioTrack(title: "Paganini - La Campanella", filename: "Classicals.de - Paganini - Violin Concerto No. 2, Op. 7 (La Campanella) - 3. Movement", artist: "Paganini"),
         AudioTrack(title: "Vivaldi - Concerto for 2 Violins", filename: "Classicals.de - Vivaldi - Concerto for 2 Violins in A minor, RV 522 - I. Allegro (A minor)", artist: "Vivaldi"),
         AudioTrack(title: "Vivaldi - Oboe Concerto", filename: "Classicals.de - Vivaldi - Oboe Concerto in C major - 2. Larghetto - RV 447", artist: "Vivaldi"),
-        AudioTrack(title: "Vivaldi - The Four Seasons", filename: "Vivaldi - The Four Seasons", artist: "Vivaldi"),
     ]
     @Published var selectedTrackIndex: Int = 0
 
@@ -411,14 +410,15 @@ public class RadioAudioManager: NSObject, ObservableObject {
 
     public func playPreviousTrack() {
         let prevIndex = (selectedTrackIndex - 1 + availableTracks.count) % availableTracks.count
-        playTrack(at: prevIndex, autoPlay: isPlaying)
-        if isPlaying {
+        playTrack(at: prevIndex, autoPlay: isPlaying || isPaused)
+        if isPlaying || isPaused {
             showNowPlaying()
         }
     }
 
-    public func showNowPlaying() {
+    public func showNowPlaying(message: String = "NOW PLAYING") {
         Task { @MainActor in
+            self.nowPlayingMessage = message
             self.showNowPlayingOverlay = true
             self.nowPlayingTimer?.invalidate()
             self.nowPlayingTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: false) { [weak self] _ in
@@ -451,6 +451,10 @@ public class RadioAudioManager: NSObject, ObservableObject {
     private func playAudioInternal(atTrack track: AudioTrack) {
         guard let url = getAudioURL(for: track) else {
             print("❌ Audio file not found for: \(track.title)")
+            Task { @MainActor in
+                self.isPlaying = false
+                self.isPaused = false
+            }
             return
         }
         playAudioInternal(at: url)
@@ -458,6 +462,9 @@ public class RadioAudioManager: NSObject, ObservableObject {
 
     private func playAudioInternal(at url: URL) {
         do {
+            // Pre-flight check: Ensure file is actually accessible
+            let _ = try AVAudioFile(forReading: url)
+            
             let session = AVAudioSession.sharedInstance()
             if session.category != .playback {
                 try session.setCategory(.playback, mode: .default, options: [])
@@ -473,11 +480,17 @@ public class RadioAudioManager: NSObject, ObservableObject {
                 try engine.start()
             }
 
+            let sessionID = UUID()
+            self.currentSessionID = sessionID
+
             playerNode.stop()
             playerNode.reset()
             playerNode.scheduleFile(file, at: nil) { [weak self] in
                 Task { @MainActor in
                     guard let self = self else { return }
+                    // Only trigger completion logic if this session is still active
+                    guard self.currentSessionID == sessionID else { return }
+                    
                     if self.isPlaying && !self.isManualStopping {
                         self.playNextTrack()
                     } else {
@@ -496,6 +509,10 @@ public class RadioAudioManager: NSObject, ObservableObject {
             print("▶️ Playing: \(url.lastPathComponent)")
         } catch {
             print("Error playing audio: \(error)")
+            Task { @MainActor in
+                self.isPlaying = false
+                self.isPaused = false
+            }
         }
     }
 
@@ -584,12 +601,23 @@ public class RadioAudioManager: NSObject, ObservableObject {
 
     private func resumePlaybackInternal() {
         if isPaused {
-            playerNode.play()
-            noisePlayerNode.play()
+            if playerNode.isPlaying || engine.isRunning {
+                playerNode.play()
+                noisePlayerNode.play()
+            } else {
+                // If the player isn't actually ready to resume, just restart the track
+                let track = selectedTrack
+                playAudioInternal(atTrack: track)
+                return
+            }
             Task { @MainActor in
                 self.isPlaying = true
                 self.isPaused = false
             }
+        } else if !isPlaying {
+            // If not playing and not paused, start from beginning
+            let track = selectedTrack
+            playAudioInternal(atTrack: track)
         }
     }
 

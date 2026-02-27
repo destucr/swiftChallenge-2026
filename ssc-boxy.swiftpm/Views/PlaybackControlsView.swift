@@ -18,9 +18,11 @@ struct PlaybackControlsView: View {
                     return
                 }
                 
-                audioManager.showNowPlaying()
-                audioManager.stopPlayback()
-                audioManager.playTestAudio()
+                if isPlayToggled {
+                    audioManager.showNowPlaying(message: "PLAY AGAIN")
+                    audioManager.stopPlayback()
+                    audioManager.playTestAudio()
+                }
             }
             .drawingGroup()
 

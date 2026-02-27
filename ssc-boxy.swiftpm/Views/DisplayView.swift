@@ -76,7 +76,7 @@ struct DisplayView: View {
                             .offset(y: -5)
                     } else {
                         // Track List Overlay
-                        VStack(alignment: .leading, spacing: 2) {
+                        VStack(alignment: .leading, spacing: 0.5) {
                             ForEach(visibleTracks) { track in
                                 let isSelected = audioManager.selectedTrack == track
                                 Button(action: {
